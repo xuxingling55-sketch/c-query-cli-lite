@@ -1,6 +1,6 @@
 # C端轻量取数工具
 
-本项目仿照 `bi-query-cli` 的轻量结构：用 AI + `knowledge/` 生成 SQL，再用 CLI 执行 SQL 并导出 Excel。
+用 AI + `knowledge/` 生成 SQL，再用 CLI 执行 SQL 并导出 Excel。
 
 ## 覆盖范围
 
