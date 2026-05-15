@@ -17,11 +17,12 @@
 | 术语 | 标准口径 | 注意事项 |
 |---|---|---|
 | 注册用户数 | `COUNT(DISTINCT u_user)` | 必须限定 `day` 时间范围 |
-| 注册用户 LTV | 注册 cohort 在订单窗口内的到账金额 / 注册用户数 | 金额通常使用 `arrival_amount` |
-| 活跃用户数 | 对活跃用户字段去重 | `aws.business_active_user_last_14_day` 只代表 C 端/私域活跃 |
+| 注册用户 LTV | `pay_amount / install_users` | 默认按注册转化月维度口径计算，`pay_amount` 来自注册月内付费金额，`install_users` 为注册用户数 |
+| 活跃用户数 | 基于 `aws.business_active_user_last_14_day`，按 `user_sk + 月份` 去重 | 该表就是 C 端活跃表；一用户一天可能多行，月趋势必须先做用户月去重 |
 | 活跃用户转化率 | `pay_user_cnt / active_user_cnt` | 付费用户必须去重，不能直接累加标记字段 |
+| 客单价 | `pay_amount / pay_user_cnt` | 按付费人数计算，不按订单数计算 |
 | 订单量 | `COUNT(DISTINCT order_id)` | 不能使用 `COUNT(*)` 代表订单量 |
-| GMV | 按场景汇总 `sub_amount`、`order_amount` 或 `arrival_amount` | 必须说明金额字段与订单状态 |
+| GMV / 营收 | `SUM(sub_amount)` | 默认订单表 `dws.topic_order_detail`，需筛选 `original_amount >= 39`、`business_gmv_attribution IN ('电销','商业化')` |
 | 正价订单 | 满足场景 SQL 中正价条件的订单 | 常见条件为 `original_amount >= 39` |
 
 ## 关键维度
@@ -42,10 +43,37 @@
 | 易混点 | 正确理解 |
 |---|---|
 | C端活跃 vs 全公司活跃 | `aws.business_active_user_last_14_day` 只代表 C 端/私域活跃，不代表全公司活跃 |
+| C端活跃 ARPU | 使用 `aws.business_active_user_last_14_day.amount / 月活用户数`，不需要 JOIN 订单表 |
+| 用户标签字段 | 牵涉用户标签时只用带 `business_` 前缀字段；统计维度用 `business_user_pay_status_statistics_month`，业务维度用 `business_user_pay_status_business_month` |
 | 订单量 vs 子订单行数 | 订单量必须按 `order_id` 去重，子订单行数不能直接当订单量 |
 | 商品 2.0 类目 vs 策略组商品类目 | 两套类目字段不能混用，输出时必须明确字段名 |
 | LTV 金额 vs GMV | LTV 通常看注册 cohort 的到账金额，GMV 按订单或商品归属汇总 |
+| 注册用户 LTV vs 注册转化月维度 | 用户问“新增注册用户 LTV”时，默认走注册转化月维度口径，输出 `pay_amount / install_users`，而不是只输出订单金额汇总 |
 | 支付成功 vs 退款成功 | 不同场景包含的订单状态不同，必须以场景 SQL 和口径说明为准 |
+
+## 业务纠偏沉淀
+
+- 如果业务方在取数过程中纠正口径，必须把纠正后的稳定规则沉淀到 `business-terms.md` 或 `glossary.md`。
+- 本次纠偏：`注册用户 LTV = pay_amount / install_users`。
+- 本次回复方式纠偏：用户只问单个核心指标时，只返回核心数值和极短口径，不默认展开 SQL、结果目录、文件清单或完整字段解释。
+- 本次活跃口径纠偏：
+  - `aws.business_active_user_last_14_day` 是 C 端活跃主表。
+  - C 端活跃 ARPU 使用 `aws.business_active_user_last_14_day.amount`。
+  - 统计月活时按 `user_sk + active_month` 去重。
+  - 牵涉用户标签、统计分层、业务分层时，只用带 `business_` 前缀的字段。
+  - `user_pay_status_statistics_month` 标记为知识库不引用，默认不得使用。
+- 本次订单表纠偏：涉及订单明细、订单聚合、注册用户付费金额时，默认使用 `dws.topic_order_detail`，不要默认使用 `dw.fact_order_detail`。
+- 本次营收口径纠偏：
+  - 营收金额使用 `dws.topic_order_detail.sub_amount`。
+  - 必加筛选：`u_user IS NOT NULL`、`original_amount >= 39`、`business_gmv_attribution IN ('电销','商业化')`。
+  - 订单数使用 `COUNT(DISTINCT order_id)`。
+- 本次客单价口径纠偏：客单价 = 金额 / 付费人数，即 `pay_amount / pay_user_cnt`，不是金额 / 订单数。
+- 用户问“4月份新增注册用户的 LTV”这类问题时，应先确认年份，再使用注册转化月维度口径：
+  - `install_users`：注册月内新增注册用户数。
+  - `pay_user_num`：注册月内有付费的注册用户数。
+  - `pay_amount`：注册月内付费金额。
+  - `ltv`：`pay_amount / install_users`。
+  - 可同时输出 `FULL_MONTH`、`MTD`、`MIX` 以及去年同期 `ly_*` 字段。
 
 ## Agent 使用要求
 
