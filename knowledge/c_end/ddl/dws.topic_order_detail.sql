@@ -261,7 +261,7 @@ CREATE EXTERNAL TABLE `dws`.`topic_order_detail` (
   `tiktok_author_name` string COMMENT '抖音订单直播主播名称 |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：无',
   `tiktok_first_author_name` string COMMENT '抖音订单直播主播首次名称 |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：含最早/最大/最小等聚合逻辑',
   `good_type` string COMMENT '商品类型(已弃用,推荐使用 good_kind_name_level_2) |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：无',
-  `phone` string COMMENT '手机号 ⚠️诗华提醒phone字段可能需要base64解码 |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：无',
+  `phone` string COMMENT '手机号 ,phone字段可能需要base64解码 |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：无',
   `hire_purchase_num` int COMMENT '分期数 |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：无',
   `interest_subsidy_method` string COMMENT '贴息方式 |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：无',
   `hire_purchase_commission` double COMMENT '分期手续费 |上游：当前表字段，详细来源与计算见对应 ETL/调度 |加工：无',

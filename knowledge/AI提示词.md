@@ -64,6 +64,8 @@
 - 统计维度用户分层使用 `business_user_pay_status_statistics_month`。
 - 业务维度用户分层使用 `business_user_pay_status_business_month`。
 - 不要使用 `user_pay_status_statistics_month`；该字段在 DDL 中标记为“知识库不引用”。
+- `dws.topic_user_active_detail_day` 不是 C 端活跃主表；只允许在已经用 `aws.business_active_user_last_14_day` 确定活跃用户/月份后，通过 `LEFT JOIN` 补充学习行为、设备、下载渠道等辅助字段。
+- 不得用 `dws.topic_user_active_detail_day` 直接计算 C 端活跃人数、ARPU、活跃转化率分母或默认用户分层。
 - 涉及订单明细、订单聚合、注册用户付费金额时，默认使用 `dws.topic_order_detail`；不要把 `dw.fact_order_detail` 作为知识库默认订单表。
 - 营收金额默认使用 `dws.topic_order_detail.sub_amount`。
 - 营收筛选默认包含 `u_user IS NOT NULL`、`original_amount >= 39`、`business_gmv_attribution IN ('电销','商业化')`。

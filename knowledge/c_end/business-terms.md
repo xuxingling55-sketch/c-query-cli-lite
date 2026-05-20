@@ -44,6 +44,7 @@
 |---|---|
 | C端活跃 vs 全公司活跃 | `aws.business_active_user_last_14_day` 只代表 C 端/私域活跃，不代表全公司活跃 |
 | C端活跃 ARPU | 使用 `aws.business_active_user_last_14_day.amount / 月活用户数`，不需要 JOIN 订单表 |
+| 活跃主表 vs 活跃行为辅助表 | `aws.business_active_user_last_14_day` 是 C 端活跃主表；`dws.topic_user_active_detail_day` 只能 `LEFT JOIN` 补充行为/设备/渠道字段 |
 | 用户标签字段 | 牵涉用户标签时只用带 `business_` 前缀字段；统计维度用 `business_user_pay_status_statistics_month`，业务维度用 `business_user_pay_status_business_month` |
 | 订单量 vs 子订单行数 | 订单量必须按 `order_id` 去重，子订单行数不能直接当订单量 |
 | 商品 2.0 类目 vs 策略组商品类目 | 两套类目字段不能混用，输出时必须明确字段名 |
@@ -62,6 +63,7 @@
   - 统计月活时按 `user_sk + active_month` 去重。
   - 牵涉用户标签、统计分层、业务分层时，只用带 `business_` 前缀的字段。
   - `user_pay_status_statistics_month` 标记为知识库不引用，默认不得使用。
+  - `dws.topic_user_active_detail_day` 只能作为辅助明细表，在主活跃口径结果上 `LEFT JOIN` 补字段；不得作为活跃人数、ARPU、转化率分母的主表。
 - 本次订单表纠偏：涉及订单明细、订单聚合、注册用户付费金额时，默认使用 `dws.topic_order_detail`，不要默认使用 `dw.fact_order_detail`。
 - 本次营收口径纠偏：
   - 营收金额使用 `dws.topic_order_detail.sub_amount`。

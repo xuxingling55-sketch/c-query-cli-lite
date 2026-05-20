@@ -74,6 +74,10 @@
   - 统计维度使用 `business_user_pay_status_statistics_month`，不要使用 `user_pay_status_statistics_month`。
   - 业务维度使用 `business_user_pay_status_business_month`。
   - `user_pay_status_statistics_month` 在 DDL 中标为“知识库不引用”，不要用于取数。
+- **辅助表规则**：
+  - `dws.topic_user_active_detail_day` 不是 C 端活跃主表。
+  - 只有当需要补充学习行为、设备、下载渠道、端口等字段时，才允许在 `aws.business_active_user_last_14_day` 已确定的活跃用户集合上 `LEFT JOIN dws.topic_user_active_detail_day`。
+  - 不得使用 `dws.topic_user_active_detail_day` 直接作为活跃人数、ARPU、活跃转化率分母或默认用户分层口径。
 
 ## C端活跃用户月报
 
