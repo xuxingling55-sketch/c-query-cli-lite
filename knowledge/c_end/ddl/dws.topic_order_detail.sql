@@ -47,8 +47,13 @@
 --   转化用户量 = COUNT(DISTINCT u_user)
 --
 --   正价：order_amount >= 39（不推荐用 is_normal_price）
+--   订单、营收、GMV、ARPU 分子、付费金额默认必须筛选 is_test_user = 0，排除测试用户。
+--   例外：月报/看板对齐口径下，订单需先 JOIN 同月活跃池，且订单层不筛 is_test_user = 0，以 glossary.md 为准。
+--   看营收/GMV/ARPU 分子/付费金额时，默认不筛选 status = '支付成功'；
+--   只有用户明确要求支付成功、退款、到账或指定订单状态时，才按需求筛选 status。
 --
---   统计ltv时使用字段到账金额：SUM(arrival_amount)，订单状态 status in ('支付成功','退款成功')
+--   仅统计新增注册/注册用户 LTV 看板口径时，使用到账金额：SUM(arrival_amount)，订单状态 status in ('支付成功','退款成功')。
+--   非新增注册场景不得套用该例外，仍以 glossary.md 对应指标口径为准。
 --
 --   注意：业务指标的权威定义在 glossary.md，本段仅记录"用本表怎么算"
 --
@@ -72,17 +77,18 @@
 -- 【常用筛选条件】
 --   ★必加条件：
 --   - is_test_user = 0                       -- 排除测试用户
+--     例外：月报/看板对齐口径不加该条件，需先圈活跃池再统计池内订单
 --
 --   场景条件：
---   - status = '支付成功'                    -- 仅电销看营收时加
+--   - status = '支付成功'                    -- 仅用户明确要求支付成功口径时加；看营收默认不加
 --   - order_amount >= 39                     -- 正价订单
 --
 --   - business_gmv_attribution = '电销'      -- 限定电销业务（⚠️ 与电销订单表口径有差异）
 --
 --   补充（来源 biMetadata）：
 --   - 非分区表，查询前应先加业务过滤条件，避免无条件全表扫
---   - 常见条件：status = '支付成功'、is_test_user = 0、is_clue_seat = 1、
---     business_gmv_attribution、business_user_pay_status_business、商品类目字段等
+--   - 常见条件：is_test_user = 0、is_clue_seat = 1、business_gmv_attribution、
+--     business_user_pay_status_business、商品类目字段等；status 仅在明确要求订单状态时使用
 --
 -- =====================================================
 
@@ -475,7 +481,7 @@ CREATE EXTERNAL TABLE `dws`.`topic_order_detail` (
 -- | 未分类课程商品 | 未分类 |
 -- | 其他综合类商品 | 其他 |
 -- | 其他辅助学习产品 | 辅助产品 |
--- 来源：谭晨
+
 --
 -- ## fix_good_year（修正的商品时长）
 --

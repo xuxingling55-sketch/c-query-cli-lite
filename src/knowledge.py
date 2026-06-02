@@ -12,7 +12,7 @@ DEFAULT_KNOWLEDGE_DIR = os.path.join(PROJECT_ROOT, "knowledge")
 
 
 def load_knowledge(config: dict) -> str:
-    """加载 glossary、business-terms 和 DDL，返回拼接后的上下文字符串。"""
+    """加载业务知识、gold cases 和 DDL，返回拼接后的上下文字符串。"""
     kb_dir = config.get("knowledge_dir") or DEFAULT_KNOWLEDGE_DIR
     domains = _resolve_domains(config)
     parts: list[str] = []
@@ -30,6 +30,7 @@ def load_knowledge(config: dict) -> str:
         for name, title in (
             ("business-terms.md", "业务术语"),
             ("glossary.md", "业务知识字典"),
+            ("gold_cases.md", "黄金案例"),
         ):
             path = os.path.join(domain_dir, name)
             if os.path.isfile(path):
@@ -57,7 +58,7 @@ def get_knowledge_info(config: dict) -> dict:
         domain_dir = os.path.join(kb_dir, domain)
         if not os.path.isdir(domain_dir):
             continue
-        for fname in ("business-terms.md", "glossary.md"):
+        for fname in ("business-terms.md", "glossary.md", "gold_cases.md"):
             path = os.path.join(domain_dir, fname)
             if os.path.isfile(path):
                 glossary_count += 1
