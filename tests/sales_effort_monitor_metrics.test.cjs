@@ -37,6 +37,43 @@ test('team and segment filters intersect', () => {
   );
 });
 
+test('heat cell intersects with the active stage and user-layer filters', () => {
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+  });
+  context.globalThis = context;
+  const appPath = path.resolve(__dirname, '../outputs/sales-effort-monitor-demo/app.js');
+  vm.runInContext(fs.readFileSync(appPath, 'utf8'), context);
+  assert.deepEqual(
+    Object.keys(context.window.SalesEffortApp.state).filter((key) => [
+      'date', 'window', 'teamId', 'salespersonId', 'stage', 'userLayer', 'metric', 'heatCell',
+    ].includes(key)),
+    ['date', 'window', 'teamId', 'salespersonId', 'stage', 'userLayer', 'metric', 'heatCell'],
+  );
+  const rows = [
+    { teamId: 't1', stage: '小低', userLayer: '老未新增' },
+    { teamId: 't1', stage: '小低', userLayer: '其他付费' },
+    { teamId: 't1', stage: '小高', userLayer: '老未新增' },
+    { teamId: 't2', stage: '小低', userLayer: '老未新增' },
+  ];
+
+  const result = context.window.SalesEffortApp.intersectRows(
+    rows,
+    { teamId: 't1', stage: '小低' },
+    { stage: '小低', userLayer: '老未新增' },
+    M.applyFilters,
+  );
+  assert.deepEqual(result, [rows[0]]);
+
+  const conflict = context.window.SalesEffortApp.intersectRows(
+    rows,
+    { stage: '小高' },
+    { stage: '小低', userLayer: '老未新增' },
+    M.applyFilters,
+  );
+  assert.deepEqual(conflict, []);
+});
+
 test('simulated data is deterministic and has the required size', () => {
   const first = D.generate('demo-seed');
   const second = D.generate('demo-seed');

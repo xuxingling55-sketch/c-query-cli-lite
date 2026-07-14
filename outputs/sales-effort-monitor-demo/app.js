@@ -15,6 +15,7 @@
     single_stage_concentration: ['精力集中于单一学段', '该销售多数外呼集中在一个学段'],
     share_drop: ['学段精力占比下降', '相较前期，该学段外呼占比明显下降'],
   };
+  const USER_SURNAMES = ['陈', '林', '王', '李', '赵', '周', '吴', '徐', '孙', '胡'];
 
   const state = {
     date: null,
@@ -23,13 +24,16 @@
     salespersonId: 'all',
     stage: 'all',
     userLayer: 'all',
-    heatMetric: 'effortScore',
+    metric: 'effortScore',
     heatCell: null,
     anomalyLimit: 5,
+    drawerOpen: false,
+    drawerQuery: '',
   };
   let dataset;
   let Data;
   let Metrics;
+  let lastFocusedElement = null;
 
   const $ = (selector) => document.querySelector(selector);
   const byId = (id) => document.getElementById(id);
@@ -68,9 +72,14 @@
     return {
       teamId: state.teamId,
       salespersonId: state.salespersonId,
-      stage: state.heatCell?.stage || state.stage,
-      userLayer: state.heatCell?.userLayer || state.userLayer,
+      stage: state.stage,
+      userLayer: state.userLayer,
     };
+  }
+
+  function intersectRows(rows, filters, heatCell, applyFilters) {
+    const baseRows = applyFilters(rows, filters || {});
+    return heatCell ? applyFilters(baseRows, heatCell) : baseRows;
   }
 
   function periodDates(offset) {
@@ -82,16 +91,12 @@
 
   function rowsForPeriod(offset, includeHeatCell) {
     const dates = new Set(periodDates(offset));
-    const filters = baseDimensionFilters();
-    if (includeHeatCell === false) {
-      filters.stage = state.stage;
-      filters.userLayer = state.userLayer;
-    }
-    return Metrics.applyFilters(dataset, filters).filter((row) => dates.has(row.date));
+    const rows = Metrics.applyFilters(dataset, baseDimensionFilters()).filter((row) => dates.has(row.date));
+    return includeHeatCell === false ? rows : intersectRows(rows, {}, state.heatCell, Metrics.applyFilters);
   }
 
   function allTrendRows() {
-    return Metrics.applyFilters(dataset, baseDimensionFilters());
+    return intersectRows(dataset.dailyFacts, baseDimensionFilters(), state.heatCell, Metrics.applyFilters);
   }
 
   function metricValue(item, metric) {
@@ -156,8 +161,8 @@
   }
 
   function renderHeatmap(rows) {
-    const metric = METRIC_OPTIONS.find((item) => item.key === state.heatMetric);
-    const values = Metrics.buildHeatmap(rows, state.heatMetric);
+    const metric = METRIC_OPTIONS.find((item) => item.key === state.metric);
+    const values = Metrics.buildHeatmap(rows, state.metric);
     const lookup = new Map(values.map((item) => [`${item.stage}|${item.userLayer}`, item]));
     const maximum = Math.max(0, ...values.map((item) => item.value));
     const stageHeaders = Data.dimensions.stages.map((stage) => `<div class="heat-col">${stage}</div>`).join('');
@@ -172,9 +177,9 @@
       return `<div class="heat-row">${layer}</div>${row}`;
     }).join('');
     byId('effort-heatmap').innerHTML = `
-      <div class="panel-title"><div><h2>精力结构</h2><p>点击格子联动趋势、异常和销售排行</p></div><div class="metric-tabs" role="tablist">${METRIC_OPTIONS.map((item) => `<button type="button" role="tab" data-metric="${item.key}" class="${item.key === state.heatMetric ? 'active' : ''}" aria-selected="${item.key === state.heatMetric}">${item.label}</button>`).join('')}</div></div>
+      <div class="panel-title"><div><h2>精力结构</h2><p>点击格子联动趋势、异常和销售排行</p></div><div class="metric-tabs" role="tablist">${METRIC_OPTIONS.map((item) => `<button type="button" role="tab" data-metric="${item.key}" class="${item.key === state.metric ? 'active' : ''}" aria-selected="${item.key === state.metric}">${item.label}</button>`).join('')}</div></div>
       <div class="heatmap-wrap"><div class="heatmap"><div class="heat-corner">用户分层 / 学段</div>${stageHeaders}${cells}</div></div>
-      <div class="heat-legend"><span>较少</span><span class="legend-scale"><i></i><i></i><i></i><i></i></span><span>较多</span>${state.heatMetric === 'effortScore' ? '<span>· 综合精力按通话、触达、外呼、企微、领取加权</span>' : ''}</div>`;
+      <div class="heat-legend"><span>较少</span><span class="legend-scale"><i></i><i></i><i></i><i></i></span><span>较多</span>${state.metric === 'effortScore' ? '<span>· 综合精力按通话、触达、外呼、企微、领取加权</span>' : ''}</div>`;
   }
 
   function anomalyDescription(item) {
@@ -190,7 +195,7 @@
     const shown = anomalies.slice(0, state.anomalyLimit);
     const content = shown.length ? shown.map((item) => {
       const copy = anomalyDescription(item);
-      return `<button type="button" class="anomaly-item severity-${item.severity}" data-salesperson="${item.salespersonId || ''}" data-stage="${item.stage || ''}" data-layer="${item.userLayer || ''}"><span class="severity-bar"></span><span><strong>${copy.title}</strong><p>${escapeHtml(copy.description)}</p></span><time>${item.date ? formatDate(item.date) : '本期'}</time></button>`;
+      return `<button type="button" class="anomaly-item severity-${item.severity}" data-team="${item.teamId || ''}" data-salesperson="${item.salespersonId || ''}" data-stage="${item.stage || ''}" data-layer="${item.userLayer || ''}" data-anomaly="${item.type}"><span class="severity-bar"></span><span><strong>${copy.title}</strong><p>${escapeHtml(copy.description)}</p></span><time>${item.date ? formatDate(item.date) : '本期'}</time></button>`;
     }).join('') : '<div class="empty-state"><strong>当前范围没有明显异常</strong><span>可扩大观察窗口或清空筛选</span></div>';
     const hasMore = anomalies.length > shown.length;
     byId('anomaly-list').innerHTML = `<div class="panel-title"><div><h2>需要关注</h2><p>${anomalies.length} 条信号，按紧急程度排序</p></div><span class="anomaly-count" aria-live="polite">已展示 ${shown.length} / ${anomalies.length} 条</span></div><div class="anomaly-stack" id="anomaly-stack" role="list">${content}</div>${hasMore ? `<button type="button" class="anomaly-more" data-action="more-anomalies" aria-controls="anomaly-stack" aria-expanded="false">再看 ${Math.min(5, anomalies.length - shown.length)} 条</button>` : ''}`;
@@ -212,13 +217,13 @@
       return `<line class="grid-line" x1="${margin.left}" y1="${gridY}" x2="${width - margin.right}" y2="${gridY}"/><text class="axis-label" x="${margin.left - 9}" y="${gridY + 3}" text-anchor="end">${formatNumber(maximum * ratio, 0)}</text>`;
     }).join('');
     const labels = points.map((point, index) => index % 2 === 0 || index === points.length - 1 ? `<text class="axis-label" x="${x(index)}" y="${height - 13}" text-anchor="middle">${point.date.slice(5).replace('-', '/')}</text>` : '').join('');
-    const dots = points.map((point, index) => `<circle class="trend-dot" cx="${x(index)}" cy="${y(point.value)}" r="3"><title>${formatDate(point.date)}：${formatNumber(point.value, state.heatMetric === 'callMinutes' ? 1 : 0)}</title></circle>`).join('');
+    const dots = points.map((point, index) => `<circle class="trend-dot" cx="${x(index)}" cy="${y(point.value)}" r="3"><title>${formatDate(point.date)}：${formatNumber(point.value, state.metric === 'callMinutes' ? 1 : 0)}</title></circle>`).join('');
     return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="14天精力趋势">${grids}<line class="baseline" x1="${margin.left}" y1="${y(baseline)}" x2="${width - margin.right}" y2="${y(baseline)}"/><path class="trend-area" d="${area}"/><path class="trend-line" d="${line}"/>${dots}${labels}</svg>`;
   }
 
   function renderTrend() {
-    const metric = METRIC_OPTIONS.find((item) => item.key === state.heatMetric);
-    const points = Metrics.buildTrend(allTrendRows(), state.heatMetric);
+    const metric = METRIC_OPTIONS.find((item) => item.key === state.metric);
+    const points = Metrics.buildTrend(allTrendRows(), state.metric);
     byId('effort-trend').innerHTML = `<div class="panel-title"><div><h2>14 天变化趋势</h2><p>${metric.label} · 当前筛选范围</p></div></div>${points.length ? `<div class="trend-chart">${trendSvg(points)}</div><div class="trend-legend"><span>每日实际</span><span class="baseline-key">14 日均值</span></div>` : emptyState()}`;
   }
 
@@ -226,13 +231,23 @@
     const ranking = Metrics.rankSalespeople(rows).slice(0, 12);
     const body = ranking.map((item, index) => {
       const summary = item.summary;
-      return `<tr data-salesperson="${item.salespersonId}"><td class="rank-no">${String(index + 1).padStart(2, '0')}</td><td class="sales-name">${salespersonName(item.salespersonId)}</td><td>${teamName(item.teamId)}</td><td><span class="score-pill">${item.effortScore}</span></td><td>${summary.outboundUsers}</td><td>${summary.outboundCalls}</td><td>${formatPercent(summary.connectionRate)}</td><td>${formatNumber(summary.callMinutes, 1)}</td><td>${summary.wecomInteractions}</td></tr>`;
+      return `<tr data-salesperson="${item.salespersonId}" tabindex="0" role="button" aria-label="查看 ${escapeHtml(salespersonName(item.salespersonId))} 的销售详情"><td class="rank-no">${String(index + 1).padStart(2, '0')}</td><td class="sales-name">${salespersonName(item.salespersonId)}</td><td>${teamName(item.teamId)}</td><td><span class="score-pill">${item.effortScore}</span></td><td>${summary.outboundUsers}</td><td>${summary.outboundCalls}</td><td>${formatPercent(summary.connectionRate)}</td><td>${formatNumber(summary.callMinutes, 1)}</td><td>${summary.wecomInteractions}</td></tr>`;
     }).join('');
     byId('sales-ranking').innerHTML = `<div class="panel-title"><div><h2>销售精力排行</h2><p>综合精力用于排序，点击姓名查看个人构成</p></div></div>${ranking.length ? `<div class="ranking-wrap"><table class="ranking-table"><thead><tr><th>排名</th><th>销售</th><th>团队</th><th>综合精力</th><th>外呼用户</th><th>外呼次数</th><th>接通率</th><th>通话分钟</th><th>企微互动</th></tr></thead><tbody>${body}</tbody></table></div>` : emptyState()}`;
   }
 
+  function activeFilterSummary() {
+    const labels = [];
+    if (state.teamId !== 'all') labels.push(`团队：${teamName(state.teamId)}`);
+    if (state.salespersonId !== 'all') labels.push(`销售：${salespersonName(state.salespersonId)}`);
+    if (state.stage !== 'all') labels.push(`学段：${state.stage}`);
+    if (state.userLayer !== 'all') labels.push(`用户分层：${state.userLayer}`);
+    if (state.heatCell) labels.push(`热力格：${state.heatCell.stage} × ${state.heatCell.userLayer}`);
+    return labels.length ? labels.join('；') : '当前日期与观察窗口';
+  }
+
   function emptyState() {
-    return '<div class="empty-state"><strong>当前筛选没有匹配数据</strong><span>请调整条件，或清空筛选查看全部</span><button type="button" class="text-button" data-action="reset">清空筛选</button></div>';
+    return `<div class="empty-state"><strong>当前筛选没有匹配数据</strong><span>可能冲突的条件：${escapeHtml(activeFilterSummary())}</span><button type="button" class="text-button" data-action="reset">清空筛选</button></div>`;
   }
 
   function distribution(rows, dimension, labels) {
@@ -244,78 +259,161 @@
     }).join('');
   }
 
-  function openSalesperson(id) {
-    const person = dataset.salespeople.find((item) => item.id === id);
+  function userDisplayName(userId) {
+    const number = Number(String(userId).replace(/\D/g, '')) || 0;
+    return `${USER_SURNAMES[number % USER_SURNAMES.length]}同学家长`;
+  }
+
+  function effortComposition(summary) {
+    const items = [
+      ['通话时长', summary.callMinutes, '分钟', 30],
+      ['触达用户', summary.reachedUsers, '人', 25],
+      ['外呼次数', summary.outboundCalls, '次', 20],
+      ['企微互动', summary.wecomInteractions, '次', 15],
+      ['领取用户', summary.clueUsers, '人', 10],
+    ];
+    return items.map(([label, value, unit, weight]) => `<div class="composition-row"><span>${label}</span><i><b style="width:${weight * 2.6}%"></b></i><em>${formatNumber(value, label === '通话时长' ? 1 : 0)}${unit} · 权重 ${weight}%</em></div>`).join('');
+  }
+
+  function buildUserRows(rows) {
+    const groups = new Map();
+    rows.forEach((row) => {
+      if (!groups.has(row.userId)) groups.set(row.userId, []);
+      groups.get(row.userId).push(row);
+    });
+    const anomalyByUser = new Map();
+    Metrics.detectAnomalies(rows).forEach((item) => {
+      if (!item.userId) return;
+      if (!anomalyByUser.has(item.userId)) anomalyByUser.set(item.userId, new Set());
+      anomalyByUser.get(item.userId).add(item.type);
+    });
+    return Array.from(groups, ([userId, userRows]) => {
+      const summary = Metrics.aggregateSummary(userRows);
+      const anomalyTypes = [...(anomalyByUser.get(userId) || [])];
+      return {
+        userId,
+        name: userDisplayName(userId),
+        stage: userRows[0].stage,
+        userLayer: userRows[0].userLayer,
+        summary,
+        anomalyTypes,
+        anomalyLabels: anomalyTypes.map((type) => ANOMALY_META[type]?.[0] || type),
+      };
+    }).sort((a, b) => b.summary.outboundCalls - a.summary.outboundCalls || a.userId.localeCompare(b.userId));
+  }
+
+  function renderDrawer(focusTarget) {
+    const drawer = byId('sales-drawer');
+    if (!state.drawerOpen || state.salespersonId === 'all') {
+      drawer.classList.remove('open');
+      drawer.setAttribute('aria-hidden', 'true');
+      byId('drawer-backdrop').hidden = true;
+      return;
+    }
+    const person = dataset.salespeople.find((item) => item.id === state.salespersonId);
     if (!person) return;
-    const dates = new Set(periodDates());
-    const filters = baseDimensionFilters();
-    filters.salespersonId = id;
-    const rows = Metrics.applyFilters(dataset, filters).filter((row) => dates.has(row.date));
+    const rows = rowsForPeriod();
     const summary = Metrics.aggregateSummary(rows);
     const context = [];
     if (state.teamId !== 'all') context.push(teamName(state.teamId));
-    if (filters.stage !== 'all') context.push(filters.stage);
-    if (filters.userLayer !== 'all') context.push(filters.userLayer);
+    if (state.stage !== 'all') context.push(state.stage);
+    if (state.userLayer !== 'all') context.push(state.userLayer);
+    if (state.heatCell) context.push(`${state.heatCell.stage} × ${state.heatCell.userLayer}`);
     const contextLabel = context.length ? context.join(' · ') : '全部学段 · 全部用户分层';
-    const drawer = byId('sales-drawer');
-    drawer.innerHTML = `<div class="drawer-head"><div><span class="section-kicker">销售详情 · 当前筛选范围</span><h2>${escapeHtml(person.name)}</h2><p>${teamName(person.teamId)} · ${formatDate(periodDates()[0])}—${formatDate(state.date)}</p><p class="drawer-context">${escapeHtml(contextLabel)}</p></div><button type="button" class="icon-button" data-action="close-drawer" aria-label="关闭详情" title="关闭">×</button></div>
+    const trendPoints = Metrics.buildTrend(allTrendRows(), state.metric);
+    const allUsers = buildUserRows(rows);
+    const query = state.drawerQuery.trim().toLowerCase();
+    const users = allUsers.filter((user) => [user.name, user.userId, ...user.anomalyTypes, ...user.anomalyLabels].join(' ').toLowerCase().includes(query));
+    const userBody = users.slice(0, 80).map((user) => `<tr><td><strong>${escapeHtml(user.name)}</strong><span>${escapeHtml(user.userId)}</span></td><td>${user.stage}</td><td>${user.userLayer}</td><td>${user.summary.outboundCalls}</td><td>${formatPercent(user.summary.connectionRate)}</td><td>${user.anomalyLabels.length ? user.anomalyLabels.map((label) => `<mark>${escapeHtml(label)}</mark>`).join('') : '<span class="status-normal">正常跟进</span>'}</td></tr>`).join('');
+    drawer.innerHTML = `<div class="drawer-actions"><button type="button" class="back-button" data-action="back-overview">← 返回总览</button><button type="button" class="icon-button" data-action="close-drawer" aria-label="关闭详情" title="关闭">×</button></div>
+      <div class="drawer-head"><div><span class="section-kicker">销售详情 · 当前筛选范围</span><h2>${escapeHtml(person.name)}</h2><p>${teamName(person.teamId)} · 销售编号 ${escapeHtml(person.id)}</p><p>${formatDate(periodDates()[0])}—${formatDate(state.date)}</p><p class="drawer-context">${escapeHtml(contextLabel)}</p></div></div>
       <div class="drawer-kpis"><div><span>综合精力</span><strong>${Metrics.rankSalespeople(rows)[0]?.effortScore || 0}</strong></div><div><span>外呼用户</span><strong>${summary.outboundUsers}</strong></div><div><span>外呼次数</span><strong>${summary.outboundCalls}</strong></div><div><span>接通率</span><strong>${formatPercent(summary.connectionRate)}</strong></div><div><span>通话分钟</span><strong>${formatNumber(summary.callMinutes, 1)}</strong></div><div><span>企微互动</span><strong>${summary.wecomInteractions}</strong></div></div>
+      <section class="mini-section"><h3>精力构成</h3><p class="section-note">实际投入与综合精力权重</p>${effortComposition(summary)}</section>
       <section class="mini-section"><h3>学段精力分布</h3>${distribution(rows, 'stage', Data.dimensions.stages)}</section>
       <section class="mini-section"><h3>用户分层分布</h3>${distribution(rows, 'userLayer', Data.dimensions.userLayers)}</section>
-      <button type="button" class="text-button" data-action="filter-salesperson" data-salesperson="${id}">只看这位销售</button>`;
+      <section class="mini-section"><h3>14 天趋势</h3><p class="section-note">${METRIC_OPTIONS.find((item) => item.key === state.metric).label}</p>${trendPoints.length ? `<div class="drawer-trend">${trendSvg(trendPoints)}</div>` : emptyState()}</section>
+      <section class="mini-section user-detail"><div class="user-detail-head"><div><h3>用户明细</h3><p class="section-note">${users.length} / ${allUsers.length} 位用户</p></div><label><span class="sr-only">搜索用户</span><input id="drawer-search" type="search" value="${escapeHtml(state.drawerQuery)}" placeholder="搜索姓名、用户ID、异常类型"></label></div>${userBody ? `<div class="user-table-wrap"><table class="user-table"><thead><tr><th>用户</th><th>学段</th><th>分层</th><th>外呼</th><th>接通率</th><th>异常</th></tr></thead><tbody>${userBody}</tbody></table></div>` : '<div class="drawer-empty">没有匹配的用户，请换个关键词</div>'}</section>`;
     drawer.classList.add('open');
     drawer.setAttribute('aria-hidden', 'false');
     byId('drawer-backdrop').hidden = false;
+    if (focusTarget) requestAnimationFrame(() => drawer.querySelector(focusTarget)?.focus());
+  }
+
+  function openSalesperson(id, trigger) {
+    const person = dataset.salespeople.find((item) => item.id === id);
+    if (!person) return;
+    lastFocusedElement = trigger || document.activeElement;
+    setFilters({ teamId: person.teamId, salespersonId: id, drawerOpen: true, drawerQuery: '' }, { drawerFocus: '[data-action="close-drawer"]' });
   }
 
   function closeDrawer() {
-    byId('sales-drawer').classList.remove('open');
-    byId('sales-drawer').setAttribute('aria-hidden', 'true');
-    byId('drawer-backdrop').hidden = true;
+    state.drawerOpen = false;
+    state.drawerQuery = '';
+    renderDrawer();
+    const returnTarget = lastFocusedElement;
+    lastFocusedElement = null;
+    if (returnTarget && document.contains(returnTarget)) returnTarget.focus();
+    else {
+      const salespersonId = returnTarget?.dataset?.salesperson;
+      const matchingRow = [...document.querySelectorAll('#sales-ranking [data-salesperson]')].find((row) => row.dataset.salesperson === salespersonId);
+      (matchingRow || byId('filter-salesperson')).focus();
+    }
+  }
+
+  function backToOverview() {
+    state.drawerOpen = false;
+    state.drawerQuery = '';
+    setFilters({ salespersonId: 'all' });
+    requestAnimationFrame(() => byId('filter-salesperson').focus());
   }
 
   function render() {
     try {
       renderFilters();
-      const rows = rowsForPeriod(0, false);
-      renderKpis(rows);
-      renderHeatmap(rows);
-      const linkedRows = rowsForPeriod();
-      renderAnomalies(linkedRows);
+      const baseRows = rowsForPeriod(0, false);
+      const linkedRows = intersectRows(baseRows, {}, state.heatCell, Metrics.applyFilters);
+      renderKpis(linkedRows);
+      renderHeatmap(baseRows);
+      if (linkedRows.length) renderAnomalies(linkedRows);
+      else byId('anomaly-list').innerHTML = `<div class="panel-title"><div><h2>需要关注</h2><p>当前范围</p></div></div>${emptyState()}`;
       renderTrend();
       renderRanking(linkedRows);
+      renderDrawer();
     } catch (error) {
       console.error(error);
       document.querySelector('main').innerHTML = `<div class="error-state"><strong>演示数据未能加载</strong><span>请重新打开页面</span><button type="button" class="text-button" onclick="location.reload()">重新加载</button></div>`;
     }
   }
 
-  function setFilters(patch) {
+  function setFilters(patch, options) {
     Object.assign(state, patch || {});
-    if (patch && Object.keys(patch).some((key) => ['teamId', 'salespersonId', 'stage', 'userLayer', 'date', 'window'].includes(key))) {
-      state.heatCell = null;
+    if (patch && Object.keys(patch).some((key) => ['teamId', 'salespersonId', 'stage', 'userLayer', 'date', 'window', 'heatCell'].includes(key))) {
       state.anomalyLimit = 5;
     }
     if (state.teamId !== 'all' && state.salespersonId !== 'all') {
       const person = dataset.salespeople.find((item) => item.id === state.salespersonId);
-      if (!person || person.teamId !== state.teamId) state.salespersonId = 'all';
+      if (!person || person.teamId !== state.teamId) {
+        state.salespersonId = 'all';
+        state.drawerOpen = false;
+      }
     }
-    render();
+    if (state.salespersonId === 'all' && !(patch && patch.drawerOpen)) state.drawerOpen = false;
+    if (options?.drawerOnly) renderDrawer(options.drawerFocus);
+    else {
+      render();
+      if (options?.drawerFocus) renderDrawer(options.drawerFocus);
+    }
   }
 
   function selectHeatCell(cell) {
     const same = state.heatCell && state.heatCell.stage === cell.stage && state.heatCell.userLayer === cell.userLayer;
-    state.heatCell = same ? null : { stage: cell.stage, userLayer: cell.userLayer };
-    state.anomalyLimit = 5;
-    render();
+    setFilters({ heatCell: same ? null : { stage: cell.stage, userLayer: cell.userLayer } });
   }
 
   function resetFilters() {
-    Object.assign(state, {
-      date: dataset.dates.at(-1), window: 1, teamId: 'all', salespersonId: 'all', stage: 'all', userLayer: 'all', heatMetric: 'effortScore', heatCell: null, anomalyLimit: 5,
+    setFilters({
+      date: dataset.dates.at(-1), window: 1, teamId: 'all', salespersonId: 'all', stage: 'all', userLayer: 'all', metric: 'effortScore', heatCell: null, anomalyLimit: 5, drawerOpen: false, drawerQuery: '',
     });
-    closeDrawer();
-    render();
   }
 
   function bindEvents() {
@@ -329,23 +427,67 @@
     byId('drawer-backdrop').addEventListener('click', closeDrawer);
     document.addEventListener('click', (event) => {
       const metric = event.target.closest('[data-metric]');
-      if (metric) setFilters({ heatMetric: metric.dataset.metric });
+      if (metric) setFilters({ metric: metric.dataset.metric });
       const heatCell = event.target.closest('.heat-cell');
       if (heatCell) selectHeatCell({ stage: heatCell.dataset.stage, userLayer: heatCell.dataset.layer });
       const ranking = event.target.closest('#sales-ranking [data-salesperson]');
-      if (ranking) openSalesperson(ranking.dataset.salesperson);
+      if (ranking) openSalesperson(ranking.dataset.salesperson, ranking);
       const anomaly = event.target.closest('.anomaly-item');
       if (anomaly) {
-        if (anomaly.dataset.salesperson) openSalesperson(anomaly.dataset.salesperson);
-        else setFilters({ stage: anomaly.dataset.stage || 'all', userLayer: anomaly.dataset.layer || 'all' });
+        lastFocusedElement = anomaly;
+        const patch = {
+          teamId: anomaly.dataset.team || 'all',
+          salespersonId: anomaly.dataset.salesperson || 'all',
+          stage: anomaly.dataset.stage || 'all',
+          userLayer: anomaly.dataset.layer || 'all',
+          heatCell: null,
+          drawerQuery: anomaly.dataset.anomaly || '',
+          drawerOpen: Boolean(anomaly.dataset.salesperson),
+        };
+        setFilters(patch, patch.drawerOpen ? { drawerFocus: '[data-action="close-drawer"]' } : undefined);
+        if (!patch.drawerOpen) requestAnimationFrame(() => byId('sales-ranking').scrollIntoView({ behavior: 'smooth', block: 'start' }));
       }
       const action = event.target.closest('[data-action]')?.dataset.action;
-      if (action === 'more-anomalies') { state.anomalyLimit += 5; renderAnomalies(rowsForPeriod()); }
+      if (action === 'more-anomalies') setFilters({ anomalyLimit: state.anomalyLimit + 5 });
       if (action === 'reset') resetFilters();
       if (action === 'close-drawer') closeDrawer();
-      if (action === 'filter-salesperson') { closeDrawer(); setFilters({ salespersonId: event.target.closest('[data-salesperson]').dataset.salesperson }); }
+      if (action === 'back-overview') backToOverview();
     });
-    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeDrawer(); });
+    document.addEventListener('input', (event) => {
+      if (event.target.id !== 'drawer-search') return;
+      const cursor = event.target.selectionStart;
+      setFilters({ drawerQuery: event.target.value }, { drawerOnly: true, drawerFocus: '#drawer-search' });
+      requestAnimationFrame(() => {
+        const input = byId('drawer-search');
+        if (input) input.setSelectionRange(cursor, cursor);
+      });
+    });
+    document.addEventListener('keydown', (event) => {
+      const ranking = event.target.closest?.('#sales-ranking [data-salesperson]');
+      if (ranking && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        openSalesperson(ranking.dataset.salesperson, ranking);
+        return;
+      }
+      if (!state.drawerOpen) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeDrawer();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = [...byId('sales-drawer').querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
   }
 
   function init() {
@@ -358,6 +500,6 @@
     render();
   }
 
-  window.SalesEffortApp = { render, setFilters, selectHeatCell, openSalesperson, resetFilters };
+  window.SalesEffortApp = { render, setFilters, selectHeatCell, openSalesperson, resetFilters, intersectRows, state };
   window.addEventListener('DOMContentLoaded', init);
 }());
