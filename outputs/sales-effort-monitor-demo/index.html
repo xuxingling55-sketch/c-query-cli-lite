@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>销售精力监控台 · 演示数据</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="data.js"></script>
+  <script defer src="metrics.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <div class="brand-line">
+        <h1>销售精力监控台</h1>
+        <span class="demo-badge">演示数据</span>
+      </div>
+      <p>观察销售精力流向，及时发现投入和跟进变化</p>
+    </div>
+    <div class="header-status" aria-label="数据状态">
+      <span class="status-dot"></span>
+      <span id="data-status">数据已更新</span>
+    </div>
+  </header>
+
+  <section class="filter-bar" aria-label="筛选条件">
+    <label>日期<select id="filter-date"></select></label>
+    <label>观察窗口<select id="filter-window">
+      <option value="1">单日</option>
+      <option value="7">近 7 日</option>
+      <option value="14">近 14 日</option>
+    </select></label>
+    <label>团队<select id="filter-team"></select></label>
+    <label>销售<select id="filter-salesperson"></select></label>
+    <label>学段<select id="filter-stage"></select></label>
+    <label>用户分层<select id="filter-layer"></select></label>
+    <button id="reset-filters" class="text-button" type="button">清空筛选</button>
+    <p id="filter-summary" class="filter-summary" aria-live="polite"></p>
+  </section>
+
+  <main>
+    <section class="section-heading overview-heading">
+      <div>
+        <span class="section-kicker">今日总览</span>
+        <h2>销售投入与触达</h2>
+      </div>
+      <p id="period-label"></p>
+    </section>
+    <section id="kpi-strip" class="kpi-strip" aria-label="核心状态"></section>
+
+    <section class="analysis-grid">
+      <div id="effort-heatmap" class="analysis-panel"></div>
+      <div id="anomaly-list" class="analysis-panel"></div>
+    </section>
+
+    <section id="effort-trend" class="analysis-panel wide-panel"></section>
+    <section id="sales-ranking" class="analysis-panel wide-panel"></section>
+  </main>
+
+  <aside id="sales-drawer" aria-hidden="true"></aside>
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+
+  <template id="loading-template">
+    <div class="loading-state"><span></span><p>正在整理演示数据...</p></div>
+  </template>
+</body>
+</html>
