@@ -8,14 +8,17 @@ const M = require('../outputs/sales-effort-monitor-demo/metrics.js');
 const D = require('../outputs/sales-effort-monitor-demo/data.js');
 
 test('composite effort uses the agreed weights', () => {
-  const score = M.compositeEffort({
-    normalizedCallMinutes: 1,
-    normalizedReachedUsers: 1,
-    normalizedOutboundCalls: 1,
-    normalizedWecomInteractions: 1,
-    normalizedClueReceipts: 1,
+  const dimensions = [
+    ['normalizedCallMinutes', 30],
+    ['normalizedReachedUsers', 25],
+    ['normalizedOutboundCalls', 20],
+    ['normalizedWecomInteractions', 15],
+    ['normalizedClueReceipts', 10],
+  ];
+  dimensions.forEach(([dimension, expected]) => {
+    assert.equal(M.compositeEffort({ [dimension]: 1 }), expected, dimension);
   });
-  assert.equal(score, 100);
+  assert.equal(M.compositeEffort(Object.fromEntries(dimensions.map(([key]) => [key, 1]))), 100);
 });
 
 test('zero denominators return null rates', () => {
@@ -95,6 +98,11 @@ test('summary aggregates facts and guards rates', () => {
     {
       clueReceipts: 1, outboundCalls: 2, connectedCalls: 1,
       callMinutes: 10, wecomInteractions: 1, followedUp: 1,
+      userId: 'u1', salespersonId: 's1',
+    },
+    {
+      clueReceipts: 0, outboundCalls: 0, connectedCalls: 0,
+      callMinutes: 0, wecomInteractions: 0, followedUp: 0,
       userId: 'u2', salespersonId: 's1',
     },
   ]);
@@ -105,26 +113,47 @@ test('summary aggregates facts and guards rates', () => {
   assert.equal(summary.callMinutes, 30);
   assert.equal(summary.wecomInteractions, 4);
   assert.equal(summary.followedUp, 2);
-  assert.equal(summary.connectionRate, 0.5);
-  assert.equal(summary.followupRate, 2 / 3);
+  assert.equal(summary.clueUsers, 1);
+  assert.equal(summary.outboundUsers, 1);
+  assert.equal(summary.reachedUsers, 1);
+  assert.equal(summary.wecomUsers, 1);
+  assert.equal(summary.followedUpUsers, 1);
+  assert.equal(summary.connectionRateByCalls, 0.5);
+  assert.equal(summary.connectionRateByUsers, 1);
+  assert.equal(summary.connectionRate, 1);
+  assert.equal(summary.followupRate, 1);
+  assert.equal(summary.callsPerContactedUser, 6);
   assert.equal(summary.userCount, 2);
   assert.equal(summary.salespersonCount, 1);
 });
 
+test('summary returns null for rates with no eligible users or calls', () => {
+  const summary = M.aggregateSummary([
+    { userId: 'u1', salespersonId: 's1', outboundCalls: 0, connectedCalls: 0 },
+  ]);
+  assert.equal(summary.outboundUsers, 0);
+  assert.equal(summary.reachedUsers, 0);
+  assert.equal(summary.connectionRateByCalls, null);
+  assert.equal(summary.connectionRateByUsers, null);
+  assert.equal(summary.connectionRate, null);
+  assert.equal(summary.callsPerContactedUser, null);
+  assert.equal(summary.minutesPerReachedUser, null);
+});
+
 test('heatmap, trend, and ranking produce dashboard-ready groups', () => {
   const rows = [
-    { date: '2026-07-01', salespersonId: 's1', stage: '小低', outboundCalls: 3, connectedCalls: 1, callMinutes: 5, clueReceipts: 1, wecomInteractions: 1, followedUp: 1, userId: 'u1' },
-    { date: '2026-07-01', salespersonId: 's2', stage: '小高', outboundCalls: 5, connectedCalls: 2, callMinutes: 9, clueReceipts: 2, wecomInteractions: 2, followedUp: 1, userId: 'u2' },
-    { date: '2026-07-02', salespersonId: 's1', stage: '小低', outboundCalls: 4, connectedCalls: 2, callMinutes: 8, clueReceipts: 1, wecomInteractions: 1, followedUp: 1, userId: 'u1' },
+    { date: '2026-07-01', salespersonId: 's1', stage: '小低', userLayer: '新增', outboundCalls: 3, connectedCalls: 1, callMinutes: 5, clueReceipts: 1, wecomInteractions: 1, followedUp: 1, userId: 'u1' },
+    { date: '2026-07-01', salespersonId: 's2', stage: '小高', userLayer: '高净值', outboundCalls: 5, connectedCalls: 2, callMinutes: 9, clueReceipts: 2, wecomInteractions: 2, followedUp: 1, userId: 'u2' },
+    { date: '2026-07-02', salespersonId: 's1', stage: '小低', userLayer: '新增', outboundCalls: 4, connectedCalls: 2, callMinutes: 8, clueReceipts: 1, wecomInteractions: 1, followedUp: 1, userId: 'u1' },
   ];
 
   const heatmap = M.buildHeatmap(rows, 'outboundCalls');
   const trend = M.buildTrend(rows, 'connectedCalls');
   const ranking = M.rankSalespeople(rows);
 
-  assert.deepEqual(heatmap.map((cell) => [cell.salespersonId, cell.stage, cell.value]), [
-    ['s1', '小低', 7],
-    ['s2', '小高', 5],
+  assert.deepEqual(heatmap.map((cell) => [cell.stage, cell.userLayer, cell.value]), [
+    ['小低', '新增', 7],
+    ['小高', '高净值', 5],
   ]);
   assert.deepEqual(trend.map((point) => [point.date, point.value]), [
     ['2026-07-01', 3],
@@ -133,6 +162,21 @@ test('heatmap, trend, and ranking produce dashboard-ready groups', () => {
   assert.equal(ranking.length, 2);
   assert.equal(ranking[0].salespersonId, 's1');
   assert.ok(Number.isFinite(ranking[0].effortScore));
+});
+
+test('effort score is normalized consistently within each current result range', () => {
+  const rows = [
+    { date: '2026-07-01', salespersonId: 's1', stage: '小低', userLayer: '新增', userId: 'u1', callMinutes: 10, connectedCalls: 1, outboundCalls: 2, wecomInteractions: 2, clueReceipts: 1 },
+    { date: '2026-07-02', salespersonId: 's2', stage: '小高', userLayer: '高净值', userId: 'u2', callMinutes: 10, connectedCalls: 1, outboundCalls: 2, wecomInteractions: 2, clueReceipts: 1 },
+    { date: '2026-07-02', salespersonId: 's2', stage: '小高', userLayer: '高净值', userId: 'u3', callMinutes: 10, connectedCalls: 1, outboundCalls: 2, wecomInteractions: 2, clueReceipts: 1 },
+  ];
+  const heatmap = M.buildHeatmap(rows, 'effortScore');
+  const trend = M.buildTrend(rows, 'effortScore');
+  const ranking = M.rankSalespeople(rows);
+
+  assert.deepEqual(heatmap.map((item) => item.value), [50, 100]);
+  assert.deepEqual(trend.map((item) => item.value), [50, 100]);
+  assert.deepEqual(ranking.map((item) => item.effortScore), [100, 50]);
 });
 
 test('data and metrics expose browser globals without Node modules', () => {
@@ -172,4 +216,21 @@ test('anomaly detection returns every supported typed record', () => {
     'low_effective_depth',
     'single_stage_concentration',
   ].forEach((type) => assert.ok(types.has(type), `missing anomaly ${type}`));
+
+  const lowDepth = M.detectAnomalies(rows).find((item) => item.type === 'low_effective_depth');
+  assert.equal(lowDepth.label, '未接通用户拨打不足');
+  assert.match(lowDepth.description, /低于 2 次/);
+});
+
+test('unconnected low call depth triggers below two calls only', () => {
+  const base = {
+    date: '2026-07-01', teamId: 't1', salespersonId: 's1', stage: '小低',
+    userLayer: '新增', connectedCalls: 0, callMinutes: 0, followedUp: 0,
+  };
+  const anomalies = M.detectAnomalies([
+    { ...base, userId: 'one', outboundCalls: 1 },
+    { ...base, userId: 'two', outboundCalls: 2 },
+    { ...base, userId: 'zero', outboundCalls: 0 },
+  ]).filter((item) => item.type === 'low_effective_depth');
+  assert.deepEqual(anomalies.map((item) => item.userId), ['one']);
 });

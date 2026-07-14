@@ -56,7 +56,11 @@
   function aggregateSummary(rows) {
     const summary = Object.fromEntries(ADDITIVE_METRICS.map((metric) => [metric, 0]));
     const users = new Set();
+    const clueUsers = new Set();
+    const outboundUsers = new Set();
     const reachedUsers = new Set();
+    const wecomUsers = new Set();
+    const followedUpUsers = new Set();
     const salespeople = new Set();
     (rows || []).forEach((row) => {
       ADDITIVE_METRICS.forEach((metric) => {
@@ -64,31 +68,30 @@
       });
       if (row.userId != null) users.add(row.userId);
       if (row.salespersonId != null) salespeople.add(row.salespersonId);
+      if (number(row.clueReceipts) > 0 && row.userId != null) clueUsers.add(row.userId);
+      if (number(row.outboundCalls) > 0 && row.userId != null) outboundUsers.add(row.userId);
       if (number(row.connectedCalls) > 0 && row.userId != null) reachedUsers.add(row.userId);
+      if (number(row.wecomInteractions) > 0 && row.userId != null) wecomUsers.add(row.userId);
+      if (number(row.followedUp) > 0 && row.userId != null) followedUpUsers.add(row.userId);
     });
     summary.userCount = users.size;
-    summary.reachedUsers = reachedUsers.size || summary.connectedCalls;
+    summary.clueUsers = clueUsers.size;
+    summary.outboundUsers = outboundUsers.size;
+    summary.reachedUsers = reachedUsers.size;
+    summary.wecomUsers = wecomUsers.size;
+    summary.followedUpUsers = followedUpUsers.size;
     summary.salespersonCount = salespeople.size;
-    summary.connectionRate = safeRate(summary.connectedCalls, summary.outboundCalls);
-    summary.followupRate = safeRate(summary.followedUp, summary.connectedCalls);
-    summary.callsPerContactedUser = safeRate(summary.outboundCalls, summary.userCount);
+    summary.connectionRateByCalls = safeRate(summary.connectedCalls, summary.outboundCalls);
+    summary.connectionRateByUsers = safeRate(summary.reachedUsers, summary.outboundUsers);
+    summary.connectionRate = summary.connectionRateByUsers;
+    summary.followupRate = safeRate(summary.followedUpUsers, summary.reachedUsers);
+    summary.callsPerContactedUser = safeRate(summary.outboundCalls, summary.outboundUsers);
     summary.minutesPerReachedUser = safeRate(summary.callMinutes, summary.reachedUsers);
     return summary;
   }
 
-  function metricValue(rows, metric) {
-    const summary = aggregateSummary(rows);
-    if (Object.hasOwn(summary, metric)) return summary[metric];
-    if (metric === 'effortScore') {
-      return compositeEffort({
-        normalizedCallMinutes: Math.min(1, summary.callMinutes / 180),
-        normalizedReachedUsers: Math.min(1, summary.reachedUsers / 18),
-        normalizedOutboundCalls: Math.min(1, summary.outboundCalls / 55),
-        normalizedWecomInteractions: Math.min(1, summary.wecomInteractions / 35),
-        normalizedClueReceipts: Math.min(1, summary.clueReceipts / 25),
-      });
-    }
-    return 0;
+  function summaryMetric(summary, metric) {
+    return Object.hasOwn(summary, metric) ? summary[metric] : 0;
   }
 
   function groupRows(rows, keyBuilder) {
@@ -101,27 +104,60 @@
     return groups;
   }
 
-  function buildHeatmap(rows, metric) {
-    const groups = groupRows(rows, (row) => `${row.salespersonId}\u0000${row.stage}`);
-    return Array.from(groups.values(), (group) => ({
-      salespersonId: group[0].salespersonId,
-      teamId: group[0].teamId,
-      stage: group[0].stage,
-      value: metricValue(group, metric),
+  function effortMaxima(items) {
+    const metrics = ['callMinutes', 'reachedUsers', 'outboundCalls', 'wecomInteractions', 'clueReceipts'];
+    return Object.fromEntries(metrics.map((metric) => [
+      metric,
+      Math.max(0, ...items.map((item) => number(item.summary[metric]))),
+    ]));
+  }
+
+  function normalized(value, maximum) {
+    return maximum > 0 ? value / maximum : 0;
+  }
+
+  function addEffortScores(items) {
+    const maxima = effortMaxima(items);
+    return items.map((item) => ({
+      ...item,
+      effortScore: compositeEffort({
+        normalizedCallMinutes: normalized(item.summary.callMinutes, maxima.callMinutes),
+        normalizedReachedUsers: normalized(item.summary.reachedUsers, maxima.reachedUsers),
+        normalizedOutboundCalls: normalized(item.summary.outboundCalls, maxima.outboundCalls),
+        normalizedWecomInteractions: normalized(item.summary.wecomInteractions, maxima.wecomInteractions),
+        normalizedClueReceipts: normalized(item.summary.clueReceipts, maxima.clueReceipts),
+      }),
+    }));
+  }
+
+  function groupMetrics(rows, keyBuilder, dimensions, metric) {
+    const groups = groupRows(rows, keyBuilder);
+    let items = Array.from(groups.values(), (group) => ({
+      ...dimensions(group[0]),
       summary: aggregateSummary(group),
-    })).sort((a, b) => (
-      String(a.salespersonId).localeCompare(String(b.salespersonId), 'zh-CN')
-      || String(a.stage).localeCompare(String(b.stage), 'zh-CN')
+    }));
+    if (metric === 'effortScore') items = addEffortScores(items);
+    return items.map((item) => ({
+      ...item,
+      value: metric === 'effortScore' ? item.effortScore : summaryMetric(item.summary, metric),
+    }));
+  }
+
+  function buildHeatmap(rows, metric) {
+    return groupMetrics(
+      rows,
+      (row) => `${row.stage}\u0000${row.userLayer}`,
+      (row) => ({ stage: row.stage, userLayer: row.userLayer }),
+      metric,
+    ).sort((a, b) => (
+      String(a.stage).localeCompare(String(b.stage), 'zh-CN')
+      || String(a.userLayer).localeCompare(String(b.userLayer), 'zh-CN')
     ));
   }
 
   function buildTrend(rows, metric) {
-    const groups = groupRows(rows, (row) => row.date);
-    return Array.from(groups.values(), (group) => ({
-      date: group[0].date,
-      value: metricValue(group, metric),
-      summary: aggregateSummary(group),
-    })).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    return groupMetrics(rows, (row) => row.date, (row) => ({ date: row.date }), metric)
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
   }
 
   function rankSalespeople(rows) {
@@ -131,23 +167,8 @@
       teamId: group[0].teamId,
       summary: aggregateSummary(group),
     }));
-    const maxima = {
-      callMinutes: Math.max(1, ...summaries.map((item) => item.summary.callMinutes)),
-      reachedUsers: Math.max(1, ...summaries.map((item) => item.summary.reachedUsers)),
-      outboundCalls: Math.max(1, ...summaries.map((item) => item.summary.outboundCalls)),
-      wecomInteractions: Math.max(1, ...summaries.map((item) => item.summary.wecomInteractions)),
-      clueReceipts: Math.max(1, ...summaries.map((item) => item.summary.clueReceipts)),
-    };
-    return summaries.map((item) => ({
-      ...item,
-      effortScore: compositeEffort({
-        normalizedCallMinutes: item.summary.callMinutes / maxima.callMinutes,
-        normalizedReachedUsers: item.summary.reachedUsers / maxima.reachedUsers,
-        normalizedOutboundCalls: item.summary.outboundCalls / maxima.outboundCalls,
-        normalizedWecomInteractions: item.summary.wecomInteractions / maxima.wecomInteractions,
-        normalizedClueReceipts: item.summary.clueReceipts / maxima.clueReceipts,
-      }),
-    })).sort((a, b) => b.effortScore - a.effortScore || String(a.salespersonId).localeCompare(String(b.salespersonId)));
+    return addEffortScores(summaries)
+      .sort((a, b) => b.effortScore - a.effortScore || String(a.salespersonId).localeCompare(String(b.salespersonId)));
   }
 
   function anomaly(type, row, details) {
@@ -177,7 +198,12 @@
         anomalies.push(anomaly('connected_without_followup', row, { severity: 'medium', value: number(row.connectedCalls) }));
       }
       if (number(row.outboundCalls) > 0 && number(row.connectedCalls) === 0 && number(row.outboundCalls) <= 1) {
-        anomalies.push(anomaly('low_effective_depth', row, { severity: 'medium', value: number(row.outboundCalls) }));
+        anomalies.push(anomaly('low_effective_depth', row, {
+          severity: 'medium',
+          value: number(row.outboundCalls),
+          label: '未接通用户拨打不足',
+          description: '未接通用户的外呼次数低于 2 次',
+        }));
       }
     });
 
