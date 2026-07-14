@@ -112,6 +112,7 @@ main { width: min(1480px, 100%); margin: 0 auto; padding: 25px clamp(20px, 4vw, 
 .anomaly-item p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .anomaly-item time { color: #899397; font-size: 10px; }
 .anomaly-more { width: 100%; margin-top: 9px; color: var(--cyan-dark); background: transparent; border: 0; cursor: pointer; font-size: 12px; font-weight: 600; }
+.anomaly-count { color: var(--muted); font-size: 11px; white-space: nowrap; }
 
 .trend-chart { min-height: 255px; overflow-x: auto; }
 .trend-chart svg { width: 100%; min-width: 720px; height: 255px; display: block; overflow: visible; }
@@ -142,6 +143,7 @@ main { width: min(1480px, 100%); margin: 0 auto; padding: 25px clamp(20px, 4vw, 
 .drawer-head { display: flex; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .drawer-head h2 { margin: 3px 0 4px; font-size: 21px; }
 .drawer-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.drawer-head .drawer-context { margin-top: 5px; color: var(--cyan-dark); }
 .icon-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--ink); background: var(--cyan-soft); border: 0; border-radius: 4px; cursor: pointer; font-size: 21px; }
 .drawer-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 20px 0; background: var(--line); border: 1px solid var(--line); }
 .drawer-kpis div { padding: 13px; background: #fff; }
@@ -185,7 +187,6 @@ main { width: min(1480px, 100%); margin: 0 auto; padding: 25px clamp(20px, 4vw, 
   .metric-tabs { margin-top: 12px; justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; }
   .metric-tabs button { flex: 0 0 auto; }
   #anomaly-list .anomaly-stack { grid-template-columns: 1fr; }
-  .anomaly-item:nth-child(n+5) { display: none; }
   .trend-chart svg { min-width: 650px; }
   #sales-drawer { width: 100vw; padding: 18px 16px; border: 0; }
   .drawer-kpis { grid-template-columns: repeat(2, 1fr); }

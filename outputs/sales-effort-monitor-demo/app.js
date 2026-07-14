@@ -192,7 +192,8 @@
       const copy = anomalyDescription(item);
       return `<button type="button" class="anomaly-item severity-${item.severity}" data-salesperson="${item.salespersonId || ''}" data-stage="${item.stage || ''}" data-layer="${item.userLayer || ''}"><span class="severity-bar"></span><span><strong>${copy.title}</strong><p>${escapeHtml(copy.description)}</p></span><time>${item.date ? formatDate(item.date) : '本期'}</time></button>`;
     }).join('') : '<div class="empty-state"><strong>当前范围没有明显异常</strong><span>可扩大观察窗口或清空筛选</span></div>';
-    byId('anomaly-list').innerHTML = `<div class="panel-title"><div><h2>需要关注</h2><p>${anomalies.length} 条信号，按紧急程度排序</p></div></div><div class="anomaly-stack">${content}</div>${anomalies.length > shown.length ? `<button type="button" class="anomaly-more" data-action="more-anomalies">再看 ${Math.min(5, anomalies.length - shown.length)} 条</button>` : ''}`;
+    const hasMore = anomalies.length > shown.length;
+    byId('anomaly-list').innerHTML = `<div class="panel-title"><div><h2>需要关注</h2><p>${anomalies.length} 条信号，按紧急程度排序</p></div><span class="anomaly-count" aria-live="polite">已展示 ${shown.length} / ${anomalies.length} 条</span></div><div class="anomaly-stack" id="anomaly-stack" role="list">${content}</div>${hasMore ? `<button type="button" class="anomaly-more" data-action="more-anomalies" aria-controls="anomaly-stack" aria-expanded="false">再看 ${Math.min(5, anomalies.length - shown.length)} 条</button>` : ''}`;
   }
 
   function trendSvg(points) {
@@ -247,10 +248,17 @@
     const person = dataset.salespeople.find((item) => item.id === id);
     if (!person) return;
     const dates = new Set(periodDates());
-    const rows = dataset.dailyFacts.filter((row) => row.salespersonId === id && dates.has(row.date));
+    const filters = baseDimensionFilters();
+    filters.salespersonId = id;
+    const rows = Metrics.applyFilters(dataset, filters).filter((row) => dates.has(row.date));
     const summary = Metrics.aggregateSummary(rows);
+    const context = [];
+    if (state.teamId !== 'all') context.push(teamName(state.teamId));
+    if (filters.stage !== 'all') context.push(filters.stage);
+    if (filters.userLayer !== 'all') context.push(filters.userLayer);
+    const contextLabel = context.length ? context.join(' · ') : '全部学段 · 全部用户分层';
     const drawer = byId('sales-drawer');
-    drawer.innerHTML = `<div class="drawer-head"><div><span class="section-kicker">销售详情</span><h2>${escapeHtml(person.name)}</h2><p>${teamName(person.teamId)} · ${formatDate(periodDates()[0])}—${formatDate(state.date)}</p></div><button type="button" class="icon-button" data-action="close-drawer" aria-label="关闭详情" title="关闭">×</button></div>
+    drawer.innerHTML = `<div class="drawer-head"><div><span class="section-kicker">销售详情 · 当前筛选范围</span><h2>${escapeHtml(person.name)}</h2><p>${teamName(person.teamId)} · ${formatDate(periodDates()[0])}—${formatDate(state.date)}</p><p class="drawer-context">${escapeHtml(contextLabel)}</p></div><button type="button" class="icon-button" data-action="close-drawer" aria-label="关闭详情" title="关闭">×</button></div>
       <div class="drawer-kpis"><div><span>综合精力</span><strong>${Metrics.rankSalespeople(rows)[0]?.effortScore || 0}</strong></div><div><span>外呼用户</span><strong>${summary.outboundUsers}</strong></div><div><span>外呼次数</span><strong>${summary.outboundCalls}</strong></div><div><span>接通率</span><strong>${formatPercent(summary.connectionRate)}</strong></div><div><span>通话分钟</span><strong>${formatNumber(summary.callMinutes, 1)}</strong></div><div><span>企微互动</span><strong>${summary.wecomInteractions}</strong></div></div>
       <section class="mini-section"><h3>学段精力分布</h3>${distribution(rows, 'stage', Data.dimensions.stages)}</section>
       <section class="mini-section"><h3>用户分层分布</h3>${distribution(rows, 'userLayer', Data.dimensions.userLayers)}</section>
