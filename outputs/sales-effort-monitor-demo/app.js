@@ -89,10 +89,20 @@
     return dataset.dates.slice(startIndex, endIndex + 1);
   }
 
+  function filterPeriodRows(rows, dates, filters, heatCell, applyFilters) {
+    const dateSet = new Set(dates);
+    const periodRows = rows.filter((row) => dateSet.has(row.date));
+    return intersectRows(periodRows, filters, heatCell, applyFilters);
+  }
+
   function rowsForPeriod(offset, includeHeatCell) {
-    const dates = new Set(periodDates(offset));
-    const rows = Metrics.applyFilters(dataset, baseDimensionFilters()).filter((row) => dates.has(row.date));
-    return includeHeatCell === false ? rows : intersectRows(rows, {}, state.heatCell, Metrics.applyFilters);
+    return filterPeriodRows(
+      dataset.dailyFacts,
+      periodDates(offset),
+      baseDimensionFilters(),
+      includeHeatCell === false ? null : state.heatCell,
+      Metrics.applyFilters,
+    );
   }
 
   function allTrendRows() {
@@ -136,7 +146,7 @@
 
   function renderKpis(rows) {
     const summary = Metrics.aggregateSummary(rows);
-    const previous = Metrics.aggregateSummary(rowsForPeriod(state.window, false));
+    const previous = Metrics.aggregateSummary(rowsForPeriod(state.window));
     const activeSales = summary.salespersonCount;
     const kpis = [
       ['活跃销售', activeSales, '人', compare(activeSales, previous.salespersonCount)],
@@ -347,23 +357,22 @@
   }
 
   function closeDrawer() {
-    state.drawerOpen = false;
-    state.drawerQuery = '';
-    renderDrawer();
     const returnTarget = lastFocusedElement;
     lastFocusedElement = null;
-    if (returnTarget && document.contains(returnTarget)) returnTarget.focus();
-    else {
-      const salespersonId = returnTarget?.dataset?.salesperson;
-      const matchingRow = [...document.querySelectorAll('#sales-ranking [data-salesperson]')].find((row) => row.dataset.salesperson === salespersonId);
-      (matchingRow || byId('filter-salesperson')).focus();
-    }
+    setFilters({ drawerOpen: false, drawerQuery: '' }, { drawerOnly: true });
+    requestAnimationFrame(() => {
+      if (returnTarget && document.contains(returnTarget)) returnTarget.focus();
+      else {
+        const salespersonId = returnTarget?.dataset?.salesperson;
+        const matchingRow = [...document.querySelectorAll('#sales-ranking [data-salesperson]')].find((row) => row.dataset.salesperson === salespersonId);
+        (matchingRow || byId('filter-salesperson')).focus();
+      }
+    });
   }
 
   function backToOverview() {
-    state.drawerOpen = false;
-    state.drawerQuery = '';
-    setFilters({ salespersonId: 'all' });
+    lastFocusedElement = null;
+    setFilters({ salespersonId: 'all', drawerOpen: false, drawerQuery: '' });
     requestAnimationFrame(() => byId('filter-salesperson').focus());
   }
 
@@ -500,6 +509,8 @@
     render();
   }
 
-  window.SalesEffortApp = { render, setFilters, selectHeatCell, openSalesperson, resetFilters, intersectRows, state };
+  window.SalesEffortApp = {
+    render, setFilters, selectHeatCell, openSalesperson, resetFilters, intersectRows, filterPeriodRows, state,
+  };
   window.addEventListener('DOMContentLoaded', init);
 }());

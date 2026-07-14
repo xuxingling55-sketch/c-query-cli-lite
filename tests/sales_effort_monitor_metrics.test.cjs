@@ -74,6 +74,36 @@ test('heat cell intersects with the active stage and user-layer filters', () => 
   assert.deepEqual(conflict, []);
 });
 
+test('current and previous KPI periods keep identical dimension and heat-cell filters', () => {
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+  });
+  context.globalThis = context;
+  const appPath = path.resolve(__dirname, '../outputs/sales-effort-monitor-demo/app.js');
+  vm.runInContext(fs.readFileSync(appPath, 'utf8'), context);
+
+  const rows = [
+    { date: '2026-07-13', teamId: 't1', salespersonId: 's1', stage: '初中', userLayer: '其他付费', userId: 'previous-match' },
+    { date: '2026-07-13', teamId: 't1', salespersonId: 's1', stage: '高中', userLayer: '其他付费', userId: 'previous-wrong-stage' },
+    { date: '2026-07-13', teamId: 't1', salespersonId: 's2', stage: '初中', userLayer: '其他付费', userId: 'previous-wrong-salesperson' },
+    { date: '2026-07-14', teamId: 't1', salespersonId: 's1', stage: '初中', userLayer: '其他付费', userId: 'current-match' },
+    { date: '2026-07-14', teamId: 't2', salespersonId: 's1', stage: '初中', userLayer: '其他付费', userId: 'current-wrong-team' },
+  ];
+  const filters = { teamId: 't1', salespersonId: 's1', stage: 'all', userLayer: 'all' };
+  const heatCell = { stage: '初中', userLayer: '其他付费' };
+  const filterPeriodRows = context.window.SalesEffortApp.filterPeriodRows;
+
+  const current = filterPeriodRows(rows, ['2026-07-14'], filters, heatCell, M.applyFilters);
+  const previous = filterPeriodRows(rows, ['2026-07-13'], filters, heatCell, M.applyFilters);
+
+  assert.deepEqual(current.map((row) => row.userId), ['current-match']);
+  assert.deepEqual(previous.map((row) => row.userId), ['previous-match']);
+  assert.ok(previous.every((row) => row.teamId === current[0].teamId));
+  assert.ok(previous.every((row) => row.salespersonId === current[0].salespersonId));
+  assert.ok(previous.every((row) => row.stage === current[0].stage));
+  assert.ok(previous.every((row) => row.userLayer === current[0].userLayer));
+});
+
 test('simulated data is deterministic and has the required size', () => {
   const first = D.generate('demo-seed');
   const second = D.generate('demo-seed');
