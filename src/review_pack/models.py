@@ -37,7 +37,11 @@ def _parse_optional_window(
         raise ValueError(f"{label}策略来源日期必须同时提供开始和结束日期")
     if start is None:
         return None, None
-    return _parse_date(start), _parse_date(end)
+    parsed_start = _parse_date(start)
+    parsed_end = _parse_date(end)
+    if parsed_end < parsed_start:
+        raise ValueError(f"{label}策略来源截止日期不能早于开始日期")
+    return parsed_start, parsed_end
 
 
 def _parse_date(value: str | date) -> date:

@@ -74,6 +74,28 @@ class ReviewRequestTest(unittest.TestCase):
                 deposit_source_start="2026-06-01",
             )
 
+    def test_rejects_reversed_strategy_source_windows(self):
+        cases = (
+            {
+                "deposit_source_start": "2026-06-30",
+                "deposit_source_end": "2026-06-01",
+            },
+            {
+                "reservoir_source_start": "2026-05-31",
+                "reservoir_source_end": "2026-05-01",
+            },
+        )
+        for source_window in cases:
+            with self.subTest(source_window=source_window):
+                with self.assertRaisesRegex(ValueError, "截止日期不能早于开始日期"):
+                    ReviewRequest.create(
+                        "暑促",
+                        "2026-07-01",
+                        "2026-07-15",
+                        "1.2亿",
+                        **source_window,
+                    )
+
 
 class ResultModelsTest(unittest.TestCase):
     def test_shared_result_contract_defaults(self):

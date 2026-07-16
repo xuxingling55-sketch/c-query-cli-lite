@@ -6,6 +6,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from review_pack.catalog import MODULE_SPECS
 from review_pack.models import ModuleResult, ReviewPackResult
@@ -164,6 +165,42 @@ class ReviewPackCliTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertFalse(json.loads(completed.stdout)["ok"])
 
+    def test_reversed_strategy_window_returns_json_exit_2(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                *BASE_ARGS,
+                "--deposit-source-start",
+                "2026-06-30",
+                "--deposit-source-end",
+                "2026-06-01",
+                "--sample",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(payload["error_type"], "invalid_input")
+        self.assertEqual(completed.stderr, "")
+
+    def test_argument_errors_are_one_json_object_without_usage(self):
+        cases = (["--name", "暑促"], [*BASE_ARGS, "--unknown-option"])
+        for args in cases:
+            with self.subTest(args=args):
+                completed = subprocess.run(
+                    [sys.executable, str(SCRIPT), *args],
+                    capture_output=True,
+                    text=True,
+                )
+                payload = json.loads(completed.stdout)
+                self.assertEqual(completed.returncode, 2)
+                self.assertEqual(payload["error_type"], "invalid_input")
+                self.assertEqual(completed.stdout.count("\n"), 1)
+                self.assertEqual(completed.stderr, "")
+                self.assertNotIn("usage:", completed.stdout.lower())
+
     def test_all_modules_failed_returns_3_without_lark_write(self):
         writes = []
         runner = FakeRunner({spec.name: "failed" for spec in MODULE_SPECS})
@@ -214,6 +251,52 @@ class ReviewPackCliTest(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error_type"], "lark_write_failed")
+
+    def test_snapshot_failure_after_lark_success_does_not_return_4(self):
+        class Writer:
+            def write(self, result):
+                return "https://example.feishu.cn/sheets/created-once"
+
+        with patch(
+            "review_pack.cli._update_snapshot",
+            side_effect=(None, OSError("disk full")),
+        ):
+            code, payload = run_main(BASE_ARGS, FakeRunner(), writer_factory=Writer)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            payload["lark_url"], "https://example.feishu.cn/sheets/created-once"
+        )
+        self.assertEqual(len(payload["snapshot_warnings"]), 1)
+
+    def test_runner_output_and_exception_details_are_not_exposed(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        from review_pack.cli import main
+
+        secret = "password=TOP_SECRET"
+
+        class NoisyRunner:
+            def run(self, request):
+                print(secret)
+                print(secret, file=sys.stderr)
+                raise RuntimeError(secret)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = main(
+                BASE_ARGS,
+                runner_factory=lambda sample: NoisyRunner(),
+                stdout=stdout,
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 3)
+        self.assertEqual(payload["error_type"], "runner_failed")
+        self.assertEqual(stdout.getvalue().count("\n"), 1)
+        self.assertNotIn(secret, stdout.getvalue())
+        self.assertNotIn(secret, stderr.getvalue())
 
     def test_validation_is_persisted_back_to_existing_snapshot(self):
         with TemporaryDirectory() as directory:

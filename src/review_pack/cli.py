@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict
 from datetime import date, datetime
 from decimal import Decimal
+import io
 import json
 import os
 from pathlib import Path
@@ -31,8 +32,13 @@ RunnerFactory = Callable[[bool], ReviewPackRunner]
 WriterFactory = Callable[[], LarkWorkbookWriter]
 
 
+class _JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(f"命令参数不正确: {message}")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="生成一键复盘数据包")
+    parser = _JsonArgumentParser(description="生成一键复盘数据包")
     parser.add_argument("--name", required=True, help="活动名称")
     parser.add_argument("--start", required=True, help="活动开始日期 YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="活动截止日期 YYYY-MM-DD")
@@ -328,7 +334,19 @@ def _update_snapshot(result: ReviewPackResult) -> None:
             temporary_path.unlink()
 
 
-def _summary(result: ReviewPackResult, ok: bool = True) -> dict[str, Any]:
+def _try_update_snapshot(result: ReviewPackResult) -> str | None:
+    try:
+        _update_snapshot(result)
+    except Exception:
+        return "本地快照更新失败；飞书表格状态不受影响，请勿因此重复创建"
+    return None
+
+
+def _summary(
+    result: ReviewPackResult,
+    ok: bool = True,
+    snapshot_warnings: Sequence[str] = (),
+) -> dict[str, Any]:
     check_summary = {"passed": 0, "warning": 0, "failed": 0}
     for check in result.checks:
         if check.status in check_summary:
@@ -366,6 +384,7 @@ def _summary(result: ReviewPackResult, ok: bool = True) -> dict[str, Any]:
         "check_summary": check_summary,
         "failed_modules": sorted(failed_modules),
         "configuration_errors": configuration_errors,
+        "snapshot_warnings": list(snapshot_warnings),
         "local_snapshot": result.local_snapshot,
     }
     if result.lark_url:
@@ -391,22 +410,36 @@ def main(
     stdout: TextIO | None = None,
 ) -> int:
     stdout = stdout or sys.stdout
-    args = build_parser().parse_args(argv)
     try:
+        args = build_parser().parse_args(argv)
         request = _request_from_args(args)
         runner = (runner_factory or _default_runner_factory)(args.sample)
     except (TypeError, ValueError) as exc:
         _emit({"ok": False, "error_type": "invalid_input", "message": str(exc)}, stdout)
         return 2
 
-    with redirect_stdout(sys.stderr):
-        result = runner.run(request)
+    runner_output = io.StringIO()
+    try:
+        with redirect_stdout(runner_output), redirect_stderr(runner_output):
+            result = runner.run(request)
+    except Exception:
+        _emit(
+            {
+                "ok": False,
+                "error_type": "runner_failed",
+                "message": "数据模块执行失败，未生成可用结果",
+            },
+            stdout,
+        )
+        return 3
     result.checks = validate_pack(result)
     result.checks.extend(_configuration_checks(request))
-    _update_snapshot(result)
+    snapshot_warnings = []
+    if warning := _try_update_snapshot(result):
+        snapshot_warnings.append(warning)
 
     if not any(module.status == "success" for module in result.modules.values()):
-        payload = _summary(result, ok=False)
+        payload = _summary(result, ok=False, snapshot_warnings=snapshot_warnings)
         payload["error_type"] = "all_modules_failed"
         _emit(payload, stdout)
         return 3
@@ -415,15 +448,18 @@ def main(
         try:
             writer = (writer_factory or LarkWorkbookWriter)()
             result.lark_url = writer.write(result)
-            _update_snapshot(result)
         except Exception:
-            payload = _summary(result, ok=False)
+            payload = _summary(
+                result, ok=False, snapshot_warnings=snapshot_warnings
+            )
             payload["error_type"] = "lark_write_failed"
             payload["message"] = "飞书写入或回读失败，本地快照已保留"
             _emit(payload, stdout)
             return 4
+        if warning := _try_update_snapshot(result):
+            snapshot_warnings.append(warning)
 
-    _emit(_summary(result), stdout)
+    _emit(_summary(result, snapshot_warnings=snapshot_warnings), stdout)
     return 0
 
 
