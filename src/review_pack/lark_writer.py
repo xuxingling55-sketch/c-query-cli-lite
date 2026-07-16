@@ -569,6 +569,13 @@ def _sentinel_matches(
                 or expected_date != actual_date
             ):
                 return False
+        elif isinstance(expected, bool) or isinstance(actual, bool):
+            if (
+                type(expected) is not bool
+                or type(actual) is not bool
+                or expected != actual
+            ):
+                return False
         elif (
             dtypes.get(column) == "object"
             and isinstance(expected, (Integral, Real, Decimal))
@@ -583,16 +590,7 @@ def _sentinel_matches(
             and isinstance(actual, (Real, Decimal))
             and not isinstance(actual, bool)
         ):
-            if not (
-                math.isfinite(float(expected))
-                and math.isfinite(float(actual))
-                and math.isclose(
-                    float(expected),
-                    float(actual),
-                    rel_tol=1e-12,
-                    abs_tol=1e-12,
-                )
-            ):
+            if not _numeric_values_match(expected, actual):
                 return False
         elif expected != actual:
             return False
@@ -602,13 +600,66 @@ def _sentinel_matches(
 _JSON_NUMBER = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$")
 
 
+def _numeric_values_match(
+    expected: Real | Decimal, actual: Real | Decimal
+) -> bool:
+    if isinstance(expected, Decimal) or isinstance(actual, Decimal):
+        expected_decimal = _exact_decimal(expected)
+        actual_decimal = _exact_decimal(actual)
+        return (
+            expected_decimal is not None
+            and actual_decimal is not None
+            and expected_decimal == actual_decimal
+        )
+    if isinstance(expected, Integral) or isinstance(actual, Integral):
+        if (
+            isinstance(expected, Real)
+            and not isinstance(expected, Integral)
+            and not math.isfinite(float(expected))
+        ):
+            return False
+        if (
+            isinstance(actual, Real)
+            and not isinstance(actual, Integral)
+            and not math.isfinite(float(actual))
+        ):
+            return False
+        return expected == actual
+    return (
+        math.isfinite(float(expected))
+        and math.isfinite(float(actual))
+        and math.isclose(
+            float(expected),
+            float(actual),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    )
+
+
+def _exact_decimal(value: Real | Decimal) -> Decimal | None:
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, Integral):
+        return Decimal(int(value))
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return None
+    return Decimal.from_float(numeric)
+
+
 def _finite_numeric_string_matches(expected: Real | Decimal, actual: str) -> bool:
     if _JSON_NUMBER.fullmatch(actual) is None:
         return False
     try:
-        expected_number = Decimal(str(_json_value(expected)))
+        if isinstance(expected, Decimal):
+            expected_number = expected
+        elif isinstance(expected, Integral):
+            expected_number = Decimal(int(expected))
+        else:
+            expected_number = Decimal(str(float(expected)))
         actual_number = Decimal(actual)
-    except (InvalidOperation, ValueError):
+    except (InvalidOperation, OverflowError, ValueError):
         return False
     return (
         expected_number.is_finite()

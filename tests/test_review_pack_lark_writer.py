@@ -1,11 +1,16 @@
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 import json
 import tempfile
 import unittest
 
 from review_pack.catalog import SHEET_ORDER
-from review_pack.lark_writer import LarkWorkbookWriter, _workbook_payload
+from review_pack.lark_writer import (
+    LarkWorkbookWriter,
+    _sentinel_matches,
+    _workbook_payload,
+)
 from review_pack.models import CheckResult, ModuleResult, ReviewPackResult, ReviewRequest
 
 
@@ -143,6 +148,53 @@ def _result_with_sample_rows() -> ReviewPackResult:
 
 
 class LarkWorkbookWriterTest(unittest.TestCase):
+    def test_numeric_sentinel_never_treats_bool_as_number(self):
+        sheet = {"columns": ["value"], "dtypes": {"value": "int64"}}
+
+        self.assertFalse(_sentinel_matches(sheet, [1], [True]))
+        self.assertFalse(_sentinel_matches(sheet, [True], [1]))
+
+    def test_large_integer_and_integral_decimal_changes_are_exact(self):
+        int_sheet = {"columns": ["value"], "dtypes": {"value": "int64"}}
+        decimal_sheet = {"columns": ["value"], "dtypes": {"value": "float64"}}
+
+        self.assertFalse(
+            _sentinel_matches(int_sheet, [10**12], [10**12 + 1])
+        )
+        self.assertFalse(
+            _sentinel_matches(
+                decimal_sheet,
+                [Decimal("1000000000000")],
+                [Decimal("1000000000001")],
+            )
+        )
+
+    def test_long_integer_text_must_be_exactly_numerically_equal(self):
+        sheet = {"columns": ["value"], "dtypes": {"value": "object"}}
+
+        self.assertTrue(
+            _sentinel_matches(
+                sheet,
+                [123456789012345678901234567890],
+                ["123456789012345678901234567890"],
+            )
+        )
+        self.assertFalse(
+            _sentinel_matches(
+                sheet,
+                [123456789012345678901234567890],
+                ["123456789012345678901234567891"],
+            )
+        )
+
+    def test_float_tolerance_is_fixed_not_relative_to_value_size(self):
+        sheet = {"columns": ["value"], "dtypes": {"value": "float64"}}
+
+        self.assertTrue(_sentinel_matches(sheet, [0.25], [0.2500000000000004]))
+        self.assertFalse(
+            _sentinel_matches(sheet, [1_000_000_000_000.0], [1_000_000_000_001.0])
+        )
+
     def test_create_uses_fixed_sheet_order_typed_payload_and_readback(self):
         calls = []
         result = sample_result()
