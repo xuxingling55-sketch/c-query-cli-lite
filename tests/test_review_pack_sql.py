@@ -386,6 +386,46 @@ class RenderSqlTest(unittest.TestCase):
             self.assertIn("fact_rank = 1", audience)
             self.assertNotIn("MAX(CASE WHEN a.grade_name_month", audience)
 
+    def test_active_fact_ranking_has_stable_business_label_tiebreakers(self):
+        request = ReviewRequest.create(
+            "暑促", "2026-07-01", "2026-07-15", "1.2亿",
+            deposit_source_start="2026-06-24", deposit_source_end="2026-06-30",
+            reservoir_source_start="2026-05-22", reservoir_source_end="2026-06-30",
+        )
+        cases = (
+            ("deposit", "activity_audience", "tail_order_rows"),
+            ("reservoir", "active_audience", "conversion_order_rows"),
+            ("sales_funnel", "active_ranked", "active_users"),
+        )
+
+        for name, cte_name, next_name in cases:
+            sql = render_sql(Path(f"queries/review_pack/{name}.sql"), request)
+            ranked = cte_body(sql, cte_name, next_name)
+            normalized = re.sub(r"\s+", " ", ranked)
+
+            self.assertRegex(
+                normalized,
+                r"ORDER BY a\.day DESC, CASE .*高净值用户.* THEN 1 .*新增.* THEN 2 "
+                r".*老未.* THEN 3 .*续费.* THEN 4 .* ELSE 5 END",
+            )
+            self.assertIn("a.grade_name_month IS NULL", ranked)
+            self.assertIn("a.user_strategy_tag_level2_month IS NULL", ranked)
+            self.assertIn("a.user_strategy_tag_level2_month DESC", ranked)
+
+    def test_sales_private_active_row_uses_nonconstant_stable_tiebreakers(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/sales_funnel.sql"), request)
+        active_users = cte_body(sql, "active_users", "pool_users")
+        normalized = re.sub(r"\s+", " ", active_users)
+
+        self.assertIn("fact_day DESC", normalized)
+        self.assertIn("user_layer_priority", normalized)
+        self.assertIn("stage_nonempty_priority", normalized)
+        self.assertIn("stage_priority", normalized)
+        self.assertIn("tag_priority", normalized)
+        self.assertNotIn("ORDER BY CASE WHEN channel IS NULL", normalized)
+        self.assertNotRegex(normalized, r"ORDER BY[^)]*\buser_id\b")
+
     def test_third_review_semantics_and_bounded_high_value_output(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
         high = render_sql(Path("queries/review_pack/high_value.sql"), request)

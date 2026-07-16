@@ -9,12 +9,32 @@ active_ranked AS (
  SELECT p.period,CAST(a.u_user AS VARCHAR) user_id,CASE WHEN a.business_gmv_attribution='商业化' THEN 'APP' WHEN a.business_gmv_attribution='电销' THEN '销售' END channel,
   CASE WHEN a.business_user_pay_status_statistics_month IN ('新增','新用户') THEN '新增' WHEN a.business_user_pay_status_statistics_month='老未' THEN '老未' WHEN a.business_user_pay_status_statistics_month IN ('续费用户','续费') THEN '续费' WHEN a.business_user_pay_status_statistics_month='高净值用户' THEN '高净值汇总' ELSE '未映射' END user_layer,
   CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN '1–3 年级' WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN '4–6 年级' WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN '初中' WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN '高中' ELSE '未知学段' END stage,
-  ROW_NUMBER() OVER(PARTITION BY p.period,CAST(a.u_user AS VARCHAR),CASE WHEN a.business_gmv_attribution='商业化' THEN 'APP' WHEN a.business_gmv_attribution='电销' THEN '销售' END ORDER BY a.day DESC) fact_rank
+  a.day fact_day,
+  CASE WHEN a.business_user_pay_status_statistics_month='高净值用户' THEN 1 WHEN a.business_user_pay_status_statistics_month IN ('新增','新用户') THEN 2 WHEN a.business_user_pay_status_statistics_month='老未' THEN 3 WHEN a.business_user_pay_status_statistics_month IN ('续费用户','续费') THEN 4 ELSE 5 END user_layer_priority,
+  CASE WHEN a.grade_name_month IS NULL OR TRIM(a.grade_name_month)='' THEN 2 ELSE 1 END stage_nonempty_priority,
+  CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN 1 WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN 2 WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN 3 WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN 4 ELSE 5 END stage_priority,
+  CASE WHEN a.user_strategy_tag_level2_month IS NULL OR TRIM(a.user_strategy_tag_level2_month)='' THEN 2 ELSE 1 END tag_priority,
+  a.user_strategy_tag_level2_month fact_tag,
+  ROW_NUMBER() OVER(
+    PARTITION BY p.period,CAST(a.u_user AS VARCHAR),CASE WHEN a.business_gmv_attribution='商业化' THEN 'APP' WHEN a.business_gmv_attribution='电销' THEN '销售' END
+    ORDER BY a.day DESC,
+      CASE WHEN a.business_user_pay_status_statistics_month='高净值用户' THEN 1 WHEN a.business_user_pay_status_statistics_month IN ('新增','新用户') THEN 2 WHEN a.business_user_pay_status_statistics_month='老未' THEN 3 WHEN a.business_user_pay_status_statistics_month IN ('续费用户','续费') THEN 4 ELSE 5 END,
+      CASE WHEN a.grade_name_month IS NULL OR TRIM(a.grade_name_month)='' THEN 2 ELSE 1 END,
+      CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN 1 WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN 2 WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN 3 WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN 4 ELSE 5 END,
+      CASE WHEN a.user_strategy_tag_level2_month IS NULL OR TRIM(a.user_strategy_tag_level2_month)='' THEN 2 ELSE 1 END,
+      a.user_strategy_tag_level2_month DESC,
+      COALESCE(a.business_user_pay_status_statistics_month,'') DESC,
+      COALESCE(a.grade_name_month,'') DESC
+  ) fact_rank
  FROM periods p JOIN aws.business_active_user_last_14_day a ON a.day BETWEEN p.start_day AND p.end_day WHERE a.u_user IS NOT NULL
 ),
 active_users AS (
  SELECT period,channel,user_id,user_layer,stage FROM active_ranked WHERE fact_rank=1 AND channel IS NOT NULL
- UNION ALL SELECT period,'私域整体',user_id,user_layer,stage FROM (SELECT period,channel,user_id,user_layer,stage,ROW_NUMBER() OVER(PARTITION BY period,user_id ORDER BY CASE WHEN channel IS NULL THEN 1 ELSE 2 END,user_id) private_rank FROM active_ranked WHERE fact_rank=1) private_active_users WHERE private_rank=1
+ UNION ALL SELECT period,'私域整体',user_id,user_layer,stage FROM (
+   SELECT period,channel,user_id,user_layer,stage,
+     ROW_NUMBER() OVER(PARTITION BY period,user_id ORDER BY fact_day DESC,user_layer_priority,stage_nonempty_priority,stage_priority,tag_priority,fact_tag DESC,channel) private_rank
+   FROM active_ranked WHERE fact_rank=1
+ ) private_active_users WHERE private_rank=1
 ),
 pool_users AS (
  SELECT p.period,CAST(d.active_u_user AS VARCHAR) user_id,

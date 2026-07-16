@@ -50,7 +50,23 @@ active_audience AS (
     SELECT period,user_id,stage FROM (
       SELECT p.period,CAST(a.u_user AS VARCHAR) user_id,
        CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN '1–3 年级' WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN '4–6 年级' WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN '初中' WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN '高中' ELSE '未知学段' END stage,
-       ROW_NUMBER() OVER(PARTITION BY p.period,CAST(a.u_user AS VARCHAR) ORDER BY a.day DESC) fact_rank
+       ROW_NUMBER() OVER(
+         PARTITION BY p.period,CAST(a.u_user AS VARCHAR)
+         ORDER BY a.day DESC,
+           CASE WHEN a.business_user_pay_status_statistics_month='高净值用户' THEN 1
+                WHEN a.business_user_pay_status_statistics_month IN ('新增','新用户') THEN 2
+                WHEN a.business_user_pay_status_statistics_month='老未' THEN 3
+                WHEN a.business_user_pay_status_statistics_month IN ('续费用户','续费') THEN 4 ELSE 5 END,
+           CASE WHEN a.grade_name_month IS NULL OR TRIM(a.grade_name_month)='' THEN 2 ELSE 1 END,
+           CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN 1
+                WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN 2
+                WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN 3
+                WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN 4 ELSE 5 END,
+           CASE WHEN a.user_strategy_tag_level2_month IS NULL OR TRIM(a.user_strategy_tag_level2_month)='' THEN 2 ELSE 1 END,
+           a.user_strategy_tag_level2_month DESC,
+           COALESCE(a.business_user_pay_status_statistics_month,'') DESC,
+           COALESCE(a.grade_name_month,'') DESC
+       ) fact_rank
       FROM strategy_periods p JOIN aws.business_active_user_last_14_day a ON a.day BETWEEN CASE WHEN p.period='本期' THEN {{CURRENT_START}} ELSE {{LAST_YEAR_START}} END AND CASE WHEN p.period='本期' THEN {{CURRENT_END}} ELSE {{LAST_YEAR_END}} END WHERE a.u_user IS NOT NULL
     ) x WHERE fact_rank = 1
 ),
