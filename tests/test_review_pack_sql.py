@@ -103,6 +103,52 @@ class RenderSqlTest(unittest.TestCase):
         self.assertTrue(sql.endswith("LIMIT 10000"))
         self.assertNotIn(";", sql)
 
+    def test_core_templates_use_confirmed_periods_and_stages(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        root = Path("queries/review_pack")
+        sqls = {
+            name: render_sql(root / f"{name}.sql", request)
+            for name in ("overview", "active_efficiency", "user_stage", "product_structure")
+        }
+
+        for sql in sqls.values():
+            for token in ("20260701", "20260715", "20250701", "20250715"):
+                self.assertIn(token, sql)
+            self.assertIn("LIMIT 10000", sql.upper())
+            for column in (
+                "period",
+                "channel",
+                "dimension_type",
+                "dimension_value",
+                "metric",
+                "value",
+                "source_version",
+                "data_updated_at",
+                "definition_id",
+            ):
+                self.assertIn(column, sql.lower())
+
+        self.assertIn("'1–3 年级'", sqls["user_stage"])
+        self.assertIn("'4–6 年级'", sqls["user_stage"])
+        self.assertNotIn("1-4年级", sqls["user_stage"])
+        self.assertIn("'家庭包'", sqls["product_structure"])
+
+    def test_core_templates_keep_confirmed_sources_and_filters(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        root = Path("queries/review_pack")
+        active = render_sql(root / "active_efficiency.sql", request)
+        stages = render_sql(root / "user_stage.sql", request)
+        products = render_sql(root / "product_structure.sql", request)
+
+        self.assertIn("aws.business_active_user_last_14_day", active)
+        self.assertNotIn("dws.topic_order_detail", active)
+        self.assertIn("COUNT(DISTINCT", active.upper())
+        self.assertIn("'高净值－历史大会员可续购'", stages)
+        self.assertIn("'高净值－历史大会员不可续购'", stages)
+        for token in ("u_user IS NOT NULL", "is_test_user = 0", "original_amount >= 39"):
+            self.assertIn(token, products)
+        self.assertIn("'price_basis=original_amount'", products)
+
 
 if __name__ == "__main__":
     unittest.main()
