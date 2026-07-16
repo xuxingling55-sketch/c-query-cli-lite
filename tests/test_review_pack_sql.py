@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from review_pack.catalog import LONG_COLUMNS, module_spec
 from review_pack.models import ReviewRequest
 from review_pack.sql_loader import NotApplicableError, render_sql
 
@@ -213,6 +214,69 @@ class RenderSqlTest(unittest.TestCase):
         grid = cte_body(sql, "dimension_values", "dimension_grid")
         for token in ("FROM user_layer_values", "FROM stage_values", "JOIN stage_values"):
             self.assertIn(token, grid)
+
+    def test_strategy_and_sales_templates_match_the_fixed_catalog(self):
+        request = ReviewRequest.create(
+            "暑促",
+            "2026-07-01",
+            "2026-07-15",
+            "1.2亿",
+            deposit_source_start="2026-06-24",
+            deposit_source_end="2026-06-30",
+            reservoir_source_start="2026-05-22",
+            reservoir_source_end="2026-06-30",
+        )
+        root = Path("queries/review_pack")
+
+        for name in ("deposit", "reservoir", "high_value", "sales_funnel"):
+            sql = render_sql(root / f"{name}.sql", request)
+            for period in ("本期", "去年同期"):
+                self.assertIn(period, sql)
+            for channel in ("私域整体", "APP", "销售"):
+                self.assertIn(f"'{channel}'", sql)
+            for column in LONG_COLUMNS:
+                self.assertIn(column, sql.lower())
+            for metric in module_spec(name).metrics:
+                self.assertIn(f"'{metric}'", sql)
+
+    def test_strategy_source_windows_are_independent_from_activity_windows(self):
+        request = ReviewRequest.create(
+            "暑促",
+            "2026-07-01",
+            "2026-07-15",
+            "1.2亿",
+            deposit_source_start="2026-06-24",
+            deposit_source_end="2026-06-30",
+            reservoir_source_start="2026-05-22",
+            reservoir_source_end="2026-06-30",
+        )
+        root = Path("queries/review_pack")
+        deposit = render_sql(root / "deposit.sql", request)
+        reservoir = render_sql(root / "reservoir.sql", request)
+
+        deposit_source = cte_body(deposit, "deposit_source_rows", "deposit_users")
+        deposit_tail = cte_body(deposit, "tail_order_rows", "tail_orders")
+        self.assertIn("20260624", deposit)
+        self.assertIn("20260630", deposit)
+        self.assertNotIn("20260715", deposit_source)
+        self.assertIn("20260715", deposit_tail)
+
+        reservoir_source = cte_body(reservoir, "reservoir_source_rows", "reservoir_users")
+        reservoir_conversion = cte_body(reservoir, "conversion_order_rows", "conversion_orders")
+        self.assertIn("20260522", reservoir)
+        self.assertIn("20260630", reservoir)
+        self.assertNotIn("20260715", reservoir_source)
+        self.assertIn("20260715", reservoir_conversion)
+
+    def test_sales_funnel_keeps_phone_branches_and_marks_wechat_missing(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/sales_funnel.sql"), request)
+
+        for token in ("有效接通", "未有效接通", "data_source_missing", "数据源未接入"):
+            self.assertIn(token, sql)
+        wechat = cte_body(sql, "wechat_metrics", "metrics")
+        self.assertNotIn("call_phone_cnt", wechat)
+        self.assertNotIn("call_through_cnt", wechat)
 
 
 if __name__ == "__main__":
