@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import date, datetime
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -62,11 +63,11 @@ class ReviewPackRunner:
                     status="not_applicable",
                     error=str(exc),
                 )
-            except Exception as exc:
+            except Exception:
                 modules[module.name] = ModuleResult(
                     module=module.name,
                     status="failed",
-                    error=str(exc),
+                    error="query_failed: 模块执行失败",
                 )
 
         result = ReviewPackResult(request=request, modules=modules)
@@ -118,6 +119,10 @@ def _safe_name(name: str) -> str:
 
 
 def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     item = getattr(value, "item", None)

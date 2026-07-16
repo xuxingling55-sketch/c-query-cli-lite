@@ -1,8 +1,11 @@
 import json
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from review_pack.catalog import MODULE_SPECS
@@ -13,8 +16,8 @@ def request():
     return ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
 
 
-def query_row(value=100):
-    return {
+def query_row(value=100, **overrides):
+    row = {
         "period": "本期",
         "channel": "私域整体",
         "dimension_type": "总览",
@@ -25,6 +28,8 @@ def query_row(value=100):
         "data_updated_at": None,
         "definition_id": "revenue-paid-order-v1",
     }
+    row.update(overrides)
+    return row
 
 
 class ReviewPackRunnerTest(unittest.TestCase):
@@ -64,7 +69,10 @@ class ReviewPackRunnerTest(unittest.TestCase):
 
         self.assertEqual(result.modules["sales_funnel"].status, "failed")
         self.assertEqual(result.modules["sales_funnel"].rows, [])
-        self.assertIn("sales unavailable", result.modules["sales_funnel"].error)
+        self.assertEqual(
+            result.modules["sales_funnel"].error,
+            "query_failed: 模块执行失败",
+        )
         self.assertEqual(result.modules["overview"].status, "success")
         snapshot = Path(result.local_snapshot)
         self.assertTrue(snapshot.is_file())
@@ -111,6 +119,61 @@ class ReviewPackRunnerTest(unittest.TestCase):
         self.assertNotEqual(first.modules["overview"].rows, [])
         self.assertEqual(second.modules["overview"].status, "failed")
         self.assertEqual(second.modules["overview"].rows, [])
+
+    def test_snapshot_serializes_decimal_dates_and_numpy_scalars(self):
+        def fake_query(module, sql):
+            return [
+                query_row(
+                    Decimal("100"),
+                    dimension_value=date(2026, 7, 16),
+                    data_updated_at=datetime(2026, 7, 16, 9, 30),
+                ),
+                query_row(
+                    Decimal("80.25"),
+                    period="去年同期",
+                    dimension_value=date(2026, 7, 16),
+                    data_updated_at=datetime(2025, 7, 16, 9, 30),
+                ),
+                query_row(np.int64(7), metric="订单量"),
+            ]
+
+        result = self.runner_with(fake_query).run(request())
+        saved = json.loads(Path(result.local_snapshot).read_text(encoding="utf-8"))
+        by_metric = {
+            row["metric"]: row for row in saved["modules"]["overview"]["rows"]
+        }
+
+        self.assertEqual(by_metric["营收"]["current_value"], 100)
+        self.assertEqual(by_metric["营收"]["last_year_value"], 80.25)
+        self.assertEqual(by_metric["营收"]["dimension_value"], "2026-07-16")
+        self.assertEqual(
+            by_metric["营收"]["data_updated_at"], "2026-07-16T09:30:00"
+        )
+        self.assertEqual(by_metric["订单量"]["current_value"], 7)
+
+    def test_failure_details_never_reach_result_or_snapshot(self):
+        sensitive = "host=db.internal password=hunter2 sql=SELECT path=/tmp/private"
+
+        def fake_query(module, sql):
+            raise RuntimeError(sensitive)
+
+        result = self.runner_with(fake_query).run(request())
+        snapshot_text = Path(result.local_snapshot).read_text(encoding="utf-8")
+
+        for module_result in result.modules.values():
+            self.assertEqual(module_result.error, "query_failed: 模块执行失败")
+        for secret in (
+            sensitive,
+            "host",
+            "password",
+            "sql",
+            "path",
+            "db.internal",
+            "hunter2",
+            "SELECT",
+            "/tmp/private",
+        ):
+            self.assertNotIn(secret, snapshot_text)
 
     def test_sql_executor_adapter_ignores_module_and_returns_records(self):
         from review_pack.runner import sql_executor_query_runner
