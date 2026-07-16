@@ -1,0 +1,399 @@
+from copy import deepcopy
+from datetime import datetime
+import unittest
+
+from review_pack.models import ModuleResult, ReviewPackResult, ReviewRequest
+from review_pack.validation import check_channel_sum, check_formula, validate_pack
+
+
+REQUIRED_ROW = {
+    "channel": "私域整体",
+    "dimension_type": "总览",
+    "dimension_value": "全部",
+    "metric": "营收",
+    "source_version": "v1",
+    "definition_id": "test-v1",
+    "current_value": 100,
+    "last_year_value": 80,
+    "period_status": "complete",
+    "current_date_range": "2026-07-01/2026-07-15",
+    "last_year_date_range": "2025-07-01/2025-07-15",
+    "data_updated_at": datetime(2026, 7, 16, 9, 0),
+}
+
+
+def row(metric="营收", **overrides):
+    item = dict(REQUIRED_ROW, metric=metric, definition_id=f"{metric}-v1")
+    item.update(overrides)
+    return item
+
+
+def duplicate_key_rows():
+    return [row(), row()]
+
+
+def rows_with_pay_20_active_50_rate_point_5():
+    return [
+        row("活跃用户", current_value=50, last_year_value=50),
+        row("支付用户", current_value=20, last_year_value=20),
+        row("转化率", current_value=0.5, last_year_value=0.4),
+    ]
+
+
+def current_period_only_rows():
+    return [row(last_year_value=None, period_status="missing_last_year")]
+
+
+def rows_with_orders_minus_1():
+    return [row("订单量", current_value=-1, last_year_value=1)]
+
+
+def rows_with_stage_unknown():
+    return [
+        row(
+            "营收",
+            dimension_type="学段",
+            dimension_value="未知",
+            current_value=1,
+            last_year_value=0,
+        )
+    ]
+
+
+def pack_with_rows(module, rows):
+    request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", 1000)
+    return ReviewPackResult(
+        request=request,
+        modules={module: ModuleResult(module=module, status="success", rows=rows)},
+    )
+
+
+class ReviewPackValidationTest(unittest.TestCase):
+    def test_channel_mismatch_reports_difference(self):
+        rows = [
+            {"metric": "营收", "channel": "私域整体", "current_value": 120},
+            {"metric": "营收", "channel": "APP", "current_value": 50},
+            {"metric": "营收", "channel": "销售", "current_value": 60},
+        ]
+
+        check = check_channel_sum("overview", rows, 0.01)[0]
+
+        self.assertEqual(check.status, "failed")
+        self.assertEqual(check.difference, 10)
+
+    def test_required_failures_are_reported(self):
+        cases = [
+            ("duplicate_key", duplicate_key_rows(), "duplicate_key"),
+            (
+                "conversion_formula",
+                rows_with_pay_20_active_50_rate_point_5(),
+                "formula_conversion",
+            ),
+            ("missing_last_year", current_period_only_rows(), "period_complete"),
+            ("negative_count", rows_with_orders_minus_1(), "non_negative"),
+            ("unknown_stage", rows_with_stage_unknown(), "stage_unknown"),
+        ]
+        for name, rows, check_id in cases:
+            with self.subTest(name=name):
+                result = pack_with_rows("overview", rows)
+                failed = {
+                    item.check_id
+                    for item in validate_pack(result)
+                    if item.status == "failed"
+                }
+                self.assertIn(check_id, failed)
+
+    def test_validation_does_not_mutate_pack(self):
+        result = pack_with_rows("overview", [row()])
+        before = deepcopy(result)
+
+        validate_pack(result)
+
+        self.assertEqual(result, before)
+
+    def test_module_status_distinguishes_optional_unavailability(self):
+        result = pack_with_rows("overview", [row()])
+        result.modules["deposit"] = ModuleResult(
+            module="deposit", status="not_applicable", error="未提供来源期"
+        )
+        result.modules["sales_funnel"] = ModuleResult(
+            module="sales_funnel", status="failed", error="query failed"
+        )
+
+        checks = validate_pack(result)
+
+        deposit = [
+            item
+            for item in checks
+            if item.module == "deposit" and item.check_id == "module_status"
+        ][0]
+        sales = [
+            item
+            for item in checks
+            if item.module == "sales_funnel" and item.check_id == "module_status"
+        ][0]
+        self.assertEqual(deposit.status, "warning")
+        self.assertEqual(sales.status, "failed")
+
+    def test_missing_required_column_and_conflicting_key_fail(self):
+        incomplete = row()
+        del incomplete["definition_id"]
+        conflicting = row(current_value=101)
+        result = pack_with_rows("overview", [incomplete, row(), conflicting])
+
+        failed = {
+            item.check_id for item in validate_pack(result) if item.status == "failed"
+        }
+
+        self.assertIn("required_columns", failed)
+        self.assertIn("conflicting_key", failed)
+
+    def test_channel_check_only_adds_additive_metrics(self):
+        def channel_row(metric, channel, value):
+            return {
+                "metric": metric,
+                "channel": channel,
+                "dimension_type": "渠道",
+                "dimension_value": channel,
+                "current_value": value,
+            }
+
+        rows = [
+            channel_row("营收", "私域整体", 110),
+            channel_row("营收", "APP", 50),
+            channel_row("营收", "销售", 60),
+            channel_row("转化率", "私域整体", 0.4),
+            channel_row("转化率", "APP", 0.2),
+            channel_row("转化率", "销售", 0.3),
+            channel_row("活跃人数", "私域整体", 90),
+            channel_row("活跃人数", "APP", 50),
+            channel_row("活跃人数", "销售", 50),
+        ]
+
+        checks = check_channel_sum("active_efficiency", rows, 0.01)
+
+        revenue = [item for item in checks if item.actual == 110][0]
+        overlap = [item for item in checks if item.check_id == "channel_overlap"][0]
+        self.assertEqual(revenue.status, "passed")
+        self.assertEqual(overlap.status, "warning")
+        self.assertFalse(any(item.actual == 0.4 for item in checks))
+
+    def test_dimension_total_includes_unknown_bucket(self):
+        rows = [
+            row("营收", current_value=100, last_year_value=80),
+            row(
+                "营收",
+                dimension_type="学段",
+                dimension_value="小学",
+                current_value=70,
+                last_year_value=60,
+            ),
+            row(
+                "营收",
+                dimension_type="学段",
+                dimension_value="未知",
+                current_value=20,
+                last_year_value=20,
+            ),
+        ]
+
+        failed = {
+            item.check_id
+            for item in validate_pack(pack_with_rows("user_stage", rows))
+            if item.status == "failed"
+        }
+
+        self.assertIn("dimension_sum", failed)
+        self.assertIn("stage_unknown", failed)
+
+    def test_deposit_and_sales_conservation(self):
+        deposit_rows = [
+            row("定金来源用户数", current_value=10, last_year_value=8),
+            row("转组合品人数", current_value=3, last_year_value=2),
+            row("转498人数", current_value=2, last_year_value=2),
+            row("转其他商品人数", current_value=1, last_year_value=1),
+            row("未转化人数", current_value=5, last_year_value=3),
+        ]
+        sales_rows = [
+            row("电话拨打人数", current_value=20, last_year_value=10),
+            row("有效接通人数", current_value=8, last_year_value=5),
+            row("未有效接通人数", current_value=11, last_year_value=5),
+        ]
+
+        deposit_failed = {
+            item.check_id
+            for item in validate_pack(pack_with_rows("deposit", deposit_rows))
+            if item.status == "failed"
+        }
+        sales_failed = {
+            item.check_id
+            for item in validate_pack(pack_with_rows("sales_funnel", sales_rows))
+            if item.status == "failed"
+        }
+
+        self.assertIn("deposit_conservation", deposit_failed)
+        self.assertIn("sales_conservation", sales_failed)
+
+    def test_formula_checks_conversion_aov_and_arpu(self):
+        rows = [
+            row("活跃人数", current_value=50, last_year_value=40),
+            row("付费人数", current_value=20, last_year_value=10),
+            row("付费金额", current_value=200, last_year_value=100),
+            row("付费转化率", current_value=0.4, last_year_value=0.25),
+            row("客单价", current_value=9, last_year_value=10),
+            row("ARPU", current_value=4, last_year_value=2.5),
+        ]
+
+        checks = check_formula("active_efficiency", rows, 0.01)
+        by_id = {item.check_id: item for item in checks}
+
+        self.assertEqual(by_id["formula_conversion"].status, "passed")
+        self.assertEqual(by_id["formula_aov"].status, "failed")
+        self.assertEqual(by_id["formula_arpu"].status, "passed")
+
+    def test_percentage_range_and_stale_update_fail(self):
+        bad_percentage = row("目标完成率", current_value=1.2, last_year_value=0.5)
+        stale = row(data_updated_at=datetime(2026, 7, 14, 23, 59))
+        result = pack_with_rows("overview", [bad_percentage, stale])
+
+        failed = {
+            item.check_id for item in validate_pack(result) if item.status == "failed"
+        }
+
+        self.assertIn("percentage_range", failed)
+        self.assertIn("update_freshness", failed)
+
+    def test_optional_metric_source_is_a_warning(self):
+        unavailable = row(
+            "企微添加人数",
+            source_version="data_source_missing",
+            definition_id="sales_funnel.wechat.data_source_missing.v1",
+            current_value="数据源未接入",
+            last_year_value="数据源未接入",
+        )
+
+        checks = validate_pack(pack_with_rows("sales_funnel", [unavailable]))
+
+        optional = [item for item in checks if item.check_id == "optional_source"]
+        self.assertEqual(len(optional), 1)
+        self.assertEqual(optional[0].status, "warning")
+
+    def test_cross_module_stage_total_uses_unknown_bucket(self):
+        result = pack_with_rows(
+            "active_efficiency",
+            [row("营收", current_value=100, last_year_value=80)],
+        )
+        result.modules["user_stage"] = ModuleResult(
+            module="user_stage",
+            status="success",
+            rows=[
+                row(
+                    "营收",
+                    dimension_type="学段",
+                    dimension_value="小学",
+                    current_value=70,
+                    last_year_value=60,
+                ),
+                row(
+                    "营收",
+                    dimension_type="学段",
+                    dimension_value="未知",
+                    current_value=20,
+                    last_year_value=20,
+                ),
+            ],
+        )
+
+        failed = [
+            item
+            for item in validate_pack(result)
+            if item.check_id == "dimension_sum" and item.status == "failed"
+        ]
+
+        self.assertTrue(failed)
+
+    def test_segmented_sales_formulas_are_checked(self):
+        rows = [
+            row("有效接通人数", current_value=8, last_year_value=4),
+            row("有效接通后转化人数", current_value=2, last_year_value=1),
+            row("有效接通后转化率", current_value=0.3, last_year_value=0.25),
+            row("有效接通后营收", current_value=100, last_year_value=40),
+            row("有效接通后客单价", current_value=50, last_year_value=40),
+            row("有效接通后ARPU", current_value=12.5, last_year_value=10),
+        ]
+
+        checks = check_formula("sales_funnel", rows, 0.01)
+
+        self.assertTrue(
+            any(
+                item.check_id == "formula_conversion" and item.status == "failed"
+                for item in checks
+            )
+        )
+        self.assertTrue(
+            any(item.check_id == "formula_aov" and item.status == "passed" for item in checks)
+        )
+        self.assertTrue(
+            any(item.check_id == "formula_arpu" and item.status == "passed" for item in checks)
+        )
+
+    def test_missing_metric_and_non_numeric_mandatory_value_fail(self):
+        invalid = row("营收", current_value="不可用", last_year_value=80)
+
+        failed = {
+            item.check_id
+            for item in validate_pack(pack_with_rows("overview", [invalid]))
+            if item.status == "failed"
+        }
+
+        self.assertIn("required_results", failed)
+        self.assertIn("numeric_value", failed)
+
+    def test_zero_denominator_null_rate_is_not_a_missing_period(self):
+        rows = [
+            row("活跃人数", current_value=0, last_year_value=0),
+            row("付费人数", current_value=0, last_year_value=0),
+            row("付费转化率", current_value=None, last_year_value=None),
+        ]
+
+        checks = validate_pack(pack_with_rows("active_efficiency", rows))
+
+        self.assertFalse(any(item.check_id == "period_complete" for item in checks))
+
+    def test_user_layer_unknown_uses_query_dimension_name(self):
+        unknown = row(
+            "活跃人数",
+            dimension_type="用户层级",
+            dimension_value="未映射",
+            current_value=1,
+            last_year_value=0,
+        )
+
+        failed = {
+            item.check_id
+            for item in validate_pack(pack_with_rows("user_stage", [unknown]))
+            if item.status == "failed"
+        }
+
+        self.assertIn("user_unknown", failed)
+
+    def test_stage_unknown_uses_query_bucket_name(self):
+        unknown = row(
+            "活跃人数",
+            dimension_type="学段",
+            dimension_value="未知学段",
+            current_value=1,
+            last_year_value=0,
+        )
+
+        failed = {
+            item.check_id
+            for item in validate_pack(pack_with_rows("user_stage", [unknown]))
+            if item.status == "failed"
+        }
+
+        self.assertIn("stage_unknown", failed)
+
+
+if __name__ == "__main__":
+    unittest.main()
