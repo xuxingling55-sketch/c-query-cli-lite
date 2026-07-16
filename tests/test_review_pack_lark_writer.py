@@ -103,13 +103,20 @@ class LarkWorkbookWriterTest(unittest.TestCase):
                 "暑促_复盘数据包_2026-07-01_2026-07-15",
                 "--sheets",
                 "-",
+                "--styles",
+                create_argv[create_argv.index("--styles") + 1],
+                "--as",
+                "user",
                 "--format",
                 "json",
             ],
         )
         payload = json.loads(create_stdin)
+        styles = json.loads(create_argv[create_argv.index("--styles") + 1])
         self.assertEqual([sheet["name"] for sheet in payload["sheets"]], list(SHEET_ORDER))
+        self.assertEqual([style["name"] for style in styles["styles"]], list(SHEET_ORDER))
         by_name = {sheet["name"]: sheet for sheet in payload["sheets"]}
+        styles_by_name = {style["name"]: style for style in styles["styles"]}
         self.assertEqual(by_name["用户分层"]["data"][0][2], "新增")
         self.assertEqual(by_name["学段表现"]["data"][0][2], "初中")
         self.assertEqual(by_name["检查结果"]["data"][0][2], "failed")
@@ -118,10 +125,19 @@ class LarkWorkbookWriterTest(unittest.TestCase):
         self.assertEqual(by_name["经营总览"]["formats"]["current_value"], "#,##0")
         self.assertEqual(by_name["经营总览"]["formats"]["relative_change"], "0.00%")
         self.assertEqual(by_name["运行记录"]["formats"]["target_amount"], "#,##0.00")
+        overview_formats = {
+            style["range"]: style["number_format"]
+            for style in styles_by_name["经营总览"]["cell_styles"]
+            if "number_format" in style
+        }
+        self.assertEqual(overview_formats["E2:G2"], "#,##0.00")
         read_argv, read_stdin = next(call for call in calls if "+table-get" in call[0])
         self.assertEqual(
             read_argv,
-            ["lark-cli", "sheets", "+table-get", "--url", URL, "--format", "json"],
+            [
+                "lark-cli", "sheets", "+table-get", "--url", URL,
+                "--as", "user", "--format", "json",
+            ],
         )
         self.assertIsNone(read_stdin)
 
@@ -169,6 +185,70 @@ class LarkWorkbookWriterTest(unittest.TestCase):
             LarkWorkbookWriter(fake).write(sample_result())
 
         self.assertFalse(any("+workbook-create" in argv for argv, _ in calls))
+
+    def test_bot_default_is_rejected_even_when_user_token_exists(self):
+        calls = []
+
+        def fake(argv, stdin=None):
+            calls.append((argv, stdin))
+            return {
+                "verified": True,
+                "identity": "bot",
+                "identities": {"user": {"status": "active", "verified": True}},
+            }
+
+        with self.assertRaisesRegex(RuntimeError, "飞书用户认证不可用"):
+            LarkWorkbookWriter(fake).write(sample_result())
+
+        self.assertFalse(any("+workbook-create" in argv for argv, _ in calls))
+
+    def test_date_only_table_get_values_match_written_datetimes(self):
+        calls = []
+        base = successful_runner(calls)
+
+        def fake(argv, stdin=None):
+            response = base(argv, stdin)
+            if "+table-get" in argv:
+                for sheet in response["data"]["sheets"]:
+                    date_columns = {
+                        index
+                        for index, column in enumerate(sheet["columns"])
+                        if sheet["dtypes"].get(column) == "datetime64[ns]"
+                    }
+                    for row in sheet["data"]:
+                        for index in date_columns:
+                            if row[index] is not None:
+                                row[index] = row[index][:10]
+            return response
+
+        self.assertEqual(LarkWorkbookWriter(fake).write(sample_result()), URL)
+
+    def test_percentage_metrics_get_percentage_row_styles(self):
+        result = sample_result()
+        for metric in ("目标完成率", "付费转化率", "营收占比"):
+            row = dict(result.modules["overview"].rows[0])
+            row.update(
+                metric=metric,
+                current_value=0.8,
+                last_year_value=0.7,
+                absolute_change=0.1,
+                relative_change=1 / 7,
+            )
+            result.modules["overview"].rows.append(row)
+        calls = []
+
+        LarkWorkbookWriter(successful_runner(calls)).write(result)
+
+        create_argv = next(argv for argv, _ in calls if "+workbook-create" in argv)
+        styles = json.loads(create_argv[create_argv.index("--styles") + 1])
+        overview = next(style for style in styles["styles"] if style["name"] == "经营总览")
+        row_formats = {
+            style["range"]: style["number_format"]
+            for style in overview["cell_styles"]
+            if "number_format" in style
+        }
+        for row_number in (3, 4, 5):
+            self.assertEqual(row_formats[f"E{row_number}:H{row_number}"], "0.00%")
 
     def test_create_and_read_commands_require_ok_true_without_leaking_details(self):
         secret = "access_token=very-secret"

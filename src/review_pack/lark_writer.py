@@ -70,6 +70,7 @@ class LarkWorkbookWriter:
     def write(self, result: ReviewPackResult) -> str:
         self._require_verified_user()
         payload = _workbook_payload(result)
+        styles = _workbook_styles(payload)
         title = (
             f"{result.request.name}_复盘数据包_"
             f"{result.request.start.isoformat()}_{result.request.end.isoformat()}"
@@ -83,6 +84,10 @@ class LarkWorkbookWriter:
                 title,
                 "--sheets",
                 "-",
+                "--styles",
+                json.dumps(styles, ensure_ascii=False, allow_nan=False),
+                "--as",
+                "user",
                 "--format",
                 "json",
             ],
@@ -101,6 +106,8 @@ class LarkWorkbookWriter:
                 "+table-get",
                 "--url",
                 url,
+                "--as",
+                "user",
                 "--format",
                 "json",
             ],
@@ -118,12 +125,12 @@ class LarkWorkbookWriter:
         status = self.command_runner(
             ["lark-cli", "auth", "status", "--json", "--verify"], None
         )
-        user = status.get("identities", {}).get("user", {})
-        user_verified = user.get("verified") is True or (
-            user.get("status") == "active" and user.get("tokenStatus") != "invalid"
-        )
-        if status.get("verified") is not True or not (
-            status.get("identity") == "user" or user_verified
+        user = status.get("identities", {}).get("user")
+        nested_user_invalid = isinstance(user, Mapping) and user.get("verified") is False
+        if (
+            status.get("verified") is not True
+            or status.get("identity") != "user"
+            or nested_user_invalid
         ):
             raise RuntimeError("飞书用户认证不可用，请先完成用户认证")
 
@@ -266,6 +273,57 @@ def _typed_sheet(
     }
 
 
+def _workbook_styles(payload: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    styles = []
+    business_sheets = set(SHEET_ORDER[1:10])
+    for sheet in payload["sheets"]:
+        columns = sheet["columns"]
+        last_column = _column_letter(len(columns))
+        cell_styles = [
+            {
+                "range": f"A1:{last_column}1",
+                "font_weight": "bold",
+                "background_color": "#DDEBF7",
+                "horizontal_alignment": "center",
+                "vertical_alignment": "middle",
+            }
+        ]
+        if sheet["name"] in business_sheets:
+            metric_index = columns.index("metric")
+            for row_number, row in enumerate(sheet["data"], start=2):
+                metric = str(row[metric_index] or "")
+                if _percentage_metric(metric):
+                    value_format = "0.00%"
+                    value_range = f"E{row_number}:H{row_number}"
+                elif _integer_metric(metric):
+                    value_format = "#,##0"
+                    value_range = f"E{row_number}:G{row_number}"
+                else:
+                    value_format = "#,##0.00"
+                    value_range = f"E{row_number}:G{row_number}"
+                cell_styles.append(
+                    {"range": value_range, "number_format": value_format}
+                )
+        styles.append({"name": sheet["name"], "cell_styles": cell_styles})
+    return {"styles": styles}
+
+
+def _percentage_metric(metric: str) -> bool:
+    return any(marker in metric for marker in ("率", "占比", "比例", "进度"))
+
+
+def _integer_metric(metric: str) -> bool:
+    return any(marker in metric for marker in ("人数", "用户数", "订单量"))
+
+
+def _column_letter(number: int) -> str:
+    result = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
 def _dtype(values: Sequence[Any]) -> str:
     non_null = [_scalar(value) for value in values if value is not None]
     if not non_null:
@@ -353,10 +411,37 @@ def _readback_matches(expected: Mapping[str, Any], actual: Any) -> bool:
     sentinel_names.extend(detail_candidates[:2])
     expected_by_name = {sheet["name"]: sheet for sheet in expected_sheets}
     for name in sentinel_names:
-        expected_rows = expected_by_name[name]["data"]
-        if expected_rows and actual_by_name[name].get("data", [None])[0] != expected_rows[0]:
+        expected_sheet = expected_by_name[name]
+        expected_rows = expected_sheet["data"]
+        actual_rows = actual_by_name[name].get("data", [])
+        if expected_rows and not _sentinel_matches(
+            expected_sheet, expected_rows[0], actual_rows[0]
+        ):
             return False
     return True
+
+
+def _sentinel_matches(
+    expected_sheet: Mapping[str, Any], expected_row: Sequence[Any], actual_row: Any
+) -> bool:
+    if not isinstance(actual_row, list) or len(actual_row) != len(expected_row):
+        return False
+    dtypes = expected_sheet.get("dtypes", {})
+    for column, expected, actual in zip(
+        expected_sheet["columns"], expected_row, actual_row, strict=True
+    ):
+        if dtypes.get(column) == "datetime64[ns]":
+            if _date_part(expected) != _date_part(actual):
+                return False
+        elif expected != actual:
+            return False
+    return True
+
+
+def _date_part(value: Any) -> Any:
+    if isinstance(value, str) and len(value) >= 10:
+        return value[:10]
+    return value
 
 
 __all__ = ["LarkWorkbookWriter"]
