@@ -86,15 +86,24 @@ _STRONG_CHANNEL_SUM_DIMENSIONS = {
     "deposit": {"用户层级×学段"},
     "reservoir": {"用户层级×学段"},
 }
-_STAGE_COVERAGE_METRICS = (
-    "活跃人数",
-    "活跃用户",
-    "来源用户数",
-    "付费人数",
-    "订单量",
-    "营收",
-    "付费金额",
+_UNIQUE_CHANNEL_PEOPLE_MODULES = {"deposit", "reservoir"}
+_DEFAULT_STAGE_COVERAGE_METRICS = (
+    "活跃人数", "活跃用户", "来源用户数", "付费人数", "订单量", "营收", "付费金额"
 )
+_STAGE_COVERAGE_METRICS_BY_MODULE = {
+    "user_stage": ("活跃人数",),
+    "product_structure": ("活跃人数",),
+    "deposit": ("定金来源用户数",),
+    "reservoir": ("蓄水来源用户数",),
+    "high_value": ("来源用户数",),
+    "sales_funnel": ("线索领取人数",),
+}
+_HIGH_VALUE_CHILDREN = {
+    "高净值－当年毕业",
+    "高净值－历史大会员可续购",
+    "高净值－历史大会员不可续购",
+    "高净值－其他组合品",
+}
 
 
 def _result(
@@ -182,6 +191,9 @@ def check_channel_sum(
             marker in metric for marker in _NON_ADDITIVE_MARKERS
         )
         overlapping = any(marker in metric for marker in _OVERLAP_MARKERS)
+        if module in _UNIQUE_CHANNEL_PEOPLE_MODULES and overlapping:
+            additive = True
+            overlapping = False
         if not additive and not overlapping:
             continue
         strong = dimension_type in strong_dimensions
@@ -249,21 +261,27 @@ def _check_unknown_stage_coverage(
     """Summarize retained unknown-stage buckets as coverage warnings."""
     grouped: dict[tuple[Any, str], list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
-        if row.get("dimension_type") == "学段":
-            grouped[(row.get("channel"), "学段")].append(row)
+        dimension_type = str(row.get("dimension_type", ""))
+        if "学段" in dimension_type:
+            grouped[(row.get("channel"), dimension_type)].append(row)
 
     checks: list[CheckResult] = []
     for (channel, dimension_type), group_rows in grouped.items():
         by_metric: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
         for row in group_rows:
             by_metric[str(row.get("metric"))].append(row)
+        metric_priority = _STAGE_COVERAGE_METRICS_BY_MODULE.get(
+            module, _DEFAULT_STAGE_COVERAGE_METRICS
+        )
         metric = next(
             (
                 candidate
-                for candidate in _STAGE_COVERAGE_METRICS
+                for candidate in metric_priority
                 if candidate in by_metric
                 and any(
-                    row.get("dimension_value") in _UNKNOWN_VALUES
+                    _unknown_stage_component(
+                        dimension_type, row.get("dimension_value")
+                    )
                     for row in by_metric[candidate]
                 )
             ),
@@ -272,21 +290,18 @@ def _check_unknown_stage_coverage(
         if metric is None:
             continue
 
+        denominator_rows = _independent_stage_rows(
+            dimension_type, by_metric[metric]
+        )
         coverage_by_period: list[float | None] = []
         unknown_present = False
         for column in _PERIOD_VALUE_COLUMNS:
-            values = [row.get(column) for row in by_metric[metric]]
-            numeric_values = [value for value in values if _number(value)]
-            unknown = sum(
-                row.get(column)
-                for row in by_metric[metric]
-                if row.get("dimension_value") in _UNKNOWN_VALUES
-                and _number(row.get(column))
+            total, unknown = _stage_population_values(
+                dimension_type, denominator_rows, column
             )
-            total = sum(numeric_values)
             unknown_present = unknown_present or unknown > 0
             coverage_by_period.append(
-                None if total <= 0 else max(0.0, min(1.0, (total - unknown) / total))
+                None if total <= 0 else (total - unknown) / total
             )
         if not unknown_present:
             continue
@@ -305,6 +320,7 @@ def _check_unknown_stage_coverage(
                 module,
                 (
                     f"{channel}{dimension_type}保留未知桶；识别覆盖率："
+                    f"分母口径：{metric}；"
                     f"本期 {display(current_coverage)}，"
                     f"去年同期 {display(last_year_coverage)}"
                 ),
@@ -317,6 +333,72 @@ def _check_unknown_stage_coverage(
             )
         )
     return checks
+
+
+def _dimension_component(
+    dimension_type: str, dimension_value: Any, component: str
+) -> str | None:
+    labels = dimension_type.split("×")
+    values = str(dimension_value).split("×")
+    try:
+        index = labels.index(component)
+    except ValueError:
+        return None
+    return values[index].strip() if index < len(values) else None
+
+
+def _unknown_stage_component(dimension_type: str, dimension_value: Any) -> bool:
+    return _dimension_component(dimension_type, dimension_value, "学段") in _UNKNOWN_VALUES
+
+
+def _independent_stage_rows(
+    dimension_type: str, rows: Sequence[Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    if "用户层级" not in dimension_type:
+        return list(rows)
+    return [
+        row
+        for row in rows
+        if _dimension_component(
+            dimension_type, row.get("dimension_value"), "用户层级"
+        )
+        not in _HIGH_VALUE_CHILDREN
+    ]
+
+
+def _stage_population_values(
+    dimension_type: str,
+    rows: Sequence[Mapping[str, Any]],
+    value_column: str,
+) -> tuple[float, float]:
+    if "商品" not in dimension_type:
+        total = sum(
+            row.get(value_column)
+            for row in rows
+            if _number(row.get(value_column))
+        )
+        unknown = sum(
+            row.get(value_column)
+            for row in rows
+            if _unknown_stage_component(dimension_type, row.get("dimension_value"))
+            and _number(row.get(value_column))
+        )
+        return total, unknown
+
+    by_stage: dict[str | None, list[float]] = defaultdict(list)
+    for row in rows:
+        value = row.get(value_column)
+        if _number(value):
+            stage = _dimension_component(
+                dimension_type, row.get("dimension_value"), "学段"
+            )
+            by_stage[stage].append(value)
+    collapsed = {stage: max(values) for stage, values in by_stage.items()}
+    total = sum(collapsed.values())
+    unknown = sum(
+        value for stage, value in collapsed.items() if stage in _UNKNOWN_VALUES
+    )
+    return total, unknown
 
 
 def _formula_spec(
@@ -353,7 +435,7 @@ def _formula_spec(
 
     add(
         ("付费转化率", "转化率"),
-        ("付费人数", "支付用户", "转化人数"),
+        ("活跃付费人数", "付费人数", "支付用户", "转化人数"),
         ("活跃人数", "活跃用户", "线索领取人数"),
         "formula_conversion",
     )
@@ -727,14 +809,6 @@ def _check_rows(module: str, rows: list[dict], request_end: date) -> list[CheckR
         ):
             checks.append(_result("user_unknown", "failed", module, "存在未识别用户分层"))
     return checks
-
-
-_HIGH_VALUE_CHILDREN = {
-    "高净值－当年毕业",
-    "高净值－历史大会员可续购",
-    "高净值－历史大会员不可续购",
-    "高净值－其他组合品",
-}
 
 
 def _independent_dimension_parts(

@@ -76,6 +76,8 @@ USER_STAGE_METRICS = EFFICIENCY_METRICS + (
 PRODUCT_METRICS = (
     "订单量",
     "付费人数",
+    "活跃付费人数",
+    "活跃人数",
     "营收",
     "订单占比",
     "付费人数占比",

@@ -34,6 +34,10 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("高净值－历史大会员可续购", spec.user_layers)
         self.assertIn("高净值－其他组合品", spec.user_layers)
 
+        product = module_spec("product_structure")
+        self.assertIn("活跃人数", product.metrics)
+        self.assertIn("活跃付费人数", product.metrics)
+
     def test_summer_campaign_has_strategy_source_windows(self):
         defaults = campaign_defaults("暑促")
         self.assertEqual(defaults["deposit_source"], ["2026-06-24", "2026-06-30"])

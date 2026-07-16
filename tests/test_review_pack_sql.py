@@ -224,6 +224,8 @@ class RenderSqlTest(unittest.TestCase):
         self.assertIn("COUNT(DISTINCT active_cohort_pay_user_id)", summary_actual)
         self.assertIn("active_cohort_pay_users / NULLIF(active_users, 0)", metrics)
         self.assertIn("COUNT(DISTINCT user_id) AS pay_users", summary_actual)
+        self.assertIn("'活跃人数'", metrics)
+        self.assertIn("'活跃付费人数'", metrics)
 
     def test_user_stage_keeps_unknowns_and_uses_fixed_dimension_grid(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")

@@ -306,6 +306,8 @@ summary AS (
 metrics AS (
     SELECT period, channel, dimension_type, dimension_value, '订单量' AS metric, CAST(orders AS DOUBLE) AS value FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '付费人数', CAST(pay_users AS DOUBLE) FROM summary
+    UNION ALL SELECT period, channel, dimension_type, dimension_value, '活跃付费人数', CAST(active_cohort_pay_users AS DOUBLE) FROM summary
+    UNION ALL SELECT period, channel, dimension_type, dimension_value, '活跃人数', CAST(active_users AS DOUBLE) FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '营收', revenue FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '订单占比', orders / NULLIF(total_orders, 0) FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '付费人数占比', pay_users / NULLIF(total_pay_users, 0) FROM summary

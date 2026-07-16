@@ -1,9 +1,12 @@
 from copy import deepcopy
 from datetime import datetime
 from math import inf
+from pathlib import Path
 import unittest
 
 from review_pack.models import ModuleResult, ReviewPackResult, ReviewRequest
+from review_pack.normalize import pair_periods
+from review_pack.sql_loader import render_sql
 from review_pack.validation import check_channel_sum, check_formula, validate_pack
 
 
@@ -216,6 +219,40 @@ class ReviewPackValidationTest(unittest.TestCase):
             any(item.check_id == "channel_sum" and item.status == "failed" for item in checks)
         )
 
+    def test_unique_strategy_channels_strong_check_people_but_sales_does_not(self):
+        def channel_rows(metric):
+            return [
+                {
+                    "metric": metric,
+                    "channel": channel,
+                    "dimension_type": "用户层级×学段",
+                    "dimension_value": "新增×高中",
+                    "current_value": value,
+                }
+                for channel, value in (("私域整体", 12), ("APP", 5), ("销售", 6))
+            ]
+
+        for module, metric in (
+            ("deposit", "尾款人数"),
+            ("reservoir", "蓄水来源用户数"),
+        ):
+            with self.subTest(module=module):
+                checks = check_channel_sum(module, channel_rows(metric), 0.01)
+                self.assertTrue(
+                    any(
+                        item.check_id == "channel_sum"
+                        and item.status == "failed"
+                        for item in checks
+                    )
+                )
+
+        sales = check_channel_sum(
+            "sales_funnel", channel_rows("线索领取人数"), 0.01
+        )
+        self.assertFalse(
+            any(item.check_id == "channel_sum" and item.status == "failed" for item in sales)
+        )
+
     def test_dimension_total_includes_unknown_bucket(self):
         result = pack_with_rows(
             "active_efficiency",
@@ -234,6 +271,20 @@ class ReviewPackValidationTest(unittest.TestCase):
                 ),
                 row(
                     "营收",
+                    dimension_type="学段",
+                    dimension_value="未知",
+                    current_value=20,
+                    last_year_value=20,
+                ),
+                row(
+                    "活跃人数",
+                    dimension_type="学段",
+                    dimension_value="小学",
+                    current_value=70,
+                    last_year_value=60,
+                ),
+                row(
+                    "活跃人数",
                     dimension_type="学段",
                     dimension_value="未知",
                     current_value=20,
@@ -670,6 +721,50 @@ class ReviewPackValidationTest(unittest.TestCase):
         self.assertTrue(unverifiable)
         self.assertTrue(any("转化率" in item.message for item in unverifiable))
 
+    def test_product_sql_normalize_validate_uses_active_payers_for_conversion(self):
+        request = ReviewRequest.create("匿名活动", "2026-07-01", "2026-07-15", 1000)
+        sql = render_sql(Path("queries/review_pack/product_structure.sql"), request)
+        self.assertIn("'活跃付费人数'", sql)
+        self.assertIn("'活跃人数'", sql)
+
+        raw_rows = []
+        for period, values in (
+            (
+                "本期",
+                {"付费人数": 12, "活跃付费人数": 4, "活跃人数": 10, "转化率": 0.8},
+            ),
+            (
+                "去年同期",
+                {"付费人数": 8, "活跃付费人数": 3, "活跃人数": 10, "转化率": 0.3},
+            ),
+        ):
+            for metric, value in values.items():
+                raw_rows.append(
+                    {
+                        "period": period,
+                        "channel": "APP",
+                        "dimension_type": "商品",
+                        "dimension_value": "组合品",
+                        "metric": metric,
+                        "value": value,
+                        "source_version": "v1",
+                        "data_updated_at": datetime(2026, 7, 16, 9, 0),
+                        "definition_id": "product.active-cohort.v1",
+                    }
+                )
+
+        paired = pair_periods(raw_rows, request)
+        checks = validate_pack(pack_with_rows("product_structure", paired))
+        conversion = [
+            item
+            for item in checks
+            if item.check_id == "formula_conversion" and item.status == "failed"
+        ]
+
+        self.assertEqual(len(conversion), 1)
+        self.assertEqual(conversion[0].actual, 0.8)
+        self.assertEqual(conversion[0].expected, 0.4)
+
     def test_user_layer_unknown_uses_query_dimension_name(self):
         unknown = row(
             "活跃人数",
@@ -735,6 +830,97 @@ class ReviewPackValidationTest(unittest.TestCase):
         self.assertEqual(coverage[0].status, "warning")
         self.assertIn("本期 80.00%", coverage[0].message)
         self.assertIn("去年同期 90.00%", coverage[0].message)
+
+    def test_stage_coverage_finds_unknown_component_in_combined_dimensions(self):
+        result = pack_with_rows(
+            "user_stage",
+            [
+                row(
+                    "活跃人数",
+                    channel="APP",
+                    dimension_type="用户层级×学段",
+                    dimension_value="新增×未知学段",
+                    current_value=20,
+                    last_year_value=10,
+                ),
+                row(
+                    "活跃人数",
+                    channel="APP",
+                    dimension_type="用户层级×学段",
+                    dimension_value="新增×高中",
+                    current_value=80,
+                    last_year_value=90,
+                ),
+            ],
+        )
+        result.modules["product_structure"] = ModuleResult(
+            module="product_structure",
+            status="success",
+            rows=[
+                row(
+                    "活跃人数",
+                    channel="APP",
+                    dimension_type="学段×商品",
+                    dimension_value="未知学段×组合品",
+                    current_value=20,
+                    last_year_value=10,
+                ),
+                row(
+                    "活跃人数",
+                    channel="APP",
+                    dimension_type="学段×商品",
+                    dimension_value="高中×组合品",
+                    current_value=80,
+                    last_year_value=90,
+                ),
+            ],
+        )
+
+        warnings = [
+            item
+            for item in validate_pack(result)
+            if item.check_id == "stage_unknown_coverage"
+        ]
+
+        self.assertEqual(
+            {item.message.split("保留未知桶")[0] for item in warnings},
+            {"APP用户层级×学段", "APP学段×商品"},
+        )
+
+    def test_high_value_stage_coverage_uses_source_population_denominator(self):
+        rows = []
+        for metric, unknown, known in (
+            ("来源用户数", 20, 80),
+            ("活跃人数", 5, 5),
+        ):
+            rows.extend(
+                [
+                    row(
+                        metric,
+                        channel="销售",
+                        dimension_type="学段",
+                        dimension_value="未知学段",
+                        current_value=unknown,
+                        last_year_value=unknown,
+                    ),
+                    row(
+                        metric,
+                        channel="销售",
+                        dimension_type="学段",
+                        dimension_value="高中",
+                        current_value=known,
+                        last_year_value=known,
+                    ),
+                ]
+            )
+
+        checks = validate_pack(pack_with_rows("high_value", rows))
+        warning = next(
+            item for item in checks if item.check_id == "stage_unknown_coverage"
+        )
+
+        self.assertIn("分母口径：来源用户数", warning.message)
+        self.assertIn("本期 80.00%", warning.message)
 
 
 if __name__ == "__main__":

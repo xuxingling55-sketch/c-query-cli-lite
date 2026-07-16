@@ -174,6 +174,8 @@ def _sample_value(module: str, metric: str) -> float:
         "product_structure": {
             "订单量": 50,
             "付费人数": 50,
+            "活跃付费人数": 50,
+            "活跃人数": 100,
             "营收": 5000,
             "订单占比": 1,
             "付费人数占比": 1,
