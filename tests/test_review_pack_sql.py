@@ -452,6 +452,23 @@ class RenderSqlTest(unittest.TestCase):
             self.assertIn("o.paid_time", sql)
             self.assertIn("earliest_source_time", sql)
 
+    def test_deposit_tail_orders_are_strictly_later_and_exclude_every_source_order(self):
+        request = ReviewRequest.create(
+            "暑促", "2026-07-01", "2026-07-15", "1.2亿",
+            deposit_source_start="2026-07-01", deposit_source_end="2026-07-05",
+        )
+        sql = render_sql(Path("queries/review_pack/deposit.sql"), request)
+        tail_rows = cte_body(sql, "tail_order_rows", "tail_orders")
+        normalized = re.sub(r"\s+", " ", tail_rows)
+
+        self.assertIn("o.paid_time > d.first_deposit_time", normalized)
+        self.assertNotIn("o.paid_time >= d.first_deposit_time", normalized)
+        self.assertIn("NOT EXISTS", normalized)
+        self.assertIn("FROM deposit_source_rows source_order", normalized)
+        self.assertIn("source_order.period = d.period", normalized)
+        self.assertIn("source_order.user_id = d.user_id", normalized)
+        self.assertIn("source_order.order_id = o.order_id", normalized)
+
     def test_high_value_source_pool_uses_history_for_one_stable_channel(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
         sql = render_sql(Path("queries/review_pack/high_value.sql"), request)

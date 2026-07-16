@@ -113,11 +113,18 @@ tail_order_rows AS (
     JOIN strategy_periods p ON d.period = p.period
     JOIN dws.topic_order_detail o
       ON CAST(o.u_user AS VARCHAR) = d.user_id
-     AND o.paid_time >= d.first_deposit_time
+     AND o.paid_time > d.first_deposit_time
      AND o.paid_time_sk BETWEEN CASE WHEN p.period='本期' THEN {{CURRENT_START}} ELSE {{LAST_YEAR_START}} END
                             AND CASE WHEN p.period='本期' THEN {{CURRENT_END}} ELSE {{LAST_YEAR_END}} END
     WHERE o.u_user IS NOT NULL AND o.is_test_user = 0 AND o.original_amount >= 39
       AND o.business_gmv_attribution IN ('商业化', '电销')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM deposit_source_rows source_order
+          WHERE source_order.period = d.period
+            AND source_order.user_id = d.user_id
+            AND source_order.order_id = o.order_id
+      )
     GROUP BY d.period, d.channel, d.user_id, o.order_id,
         CASE WHEN o.original_amount >= 498 AND o.original_amount < 499 THEN '498'
              WHEN o.business_good_kind_name_level_1 = '组合品' THEN '组合品' ELSE '其他商品' END
