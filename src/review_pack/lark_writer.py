@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
+import math
 from numbers import Integral, Real
 import os
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -99,6 +101,24 @@ class LarkWorkbookWriter:
         if not url:
             raise RuntimeError("飞书工作簿创建失败，本地快照已保留")
 
+        self.verify(url, payload)
+
+        result.lark_url = url
+        return url
+
+    def verify(
+        self,
+        url: str,
+        result_or_payload: ReviewPackResult | Mapping[str, Any],
+    ) -> str:
+        """Verify an existing workbook without creating or changing it."""
+
+        is_result = isinstance(result_or_payload, ReviewPackResult)
+        payload = (
+            _workbook_payload(result_or_payload)
+            if is_result
+            else result_or_payload
+        )
         readback = self.command_runner(
             [
                 "lark-cli",
@@ -113,13 +133,73 @@ class LarkWorkbookWriter:
             ],
             None,
         )
-        if readback.get("ok") is not True or not _readback_matches(
+        if readback.get("ok") is not True or not _readback_structure_matches(
             payload, readback.get("data")
         ):
             raise RuntimeError("回读验证失败，本地快照已保留")
 
-        result.lark_url = url
+        for expected_sheet, row_index in _sentinel_rows(payload):
+            if not self._targeted_row_matches(url, expected_sheet, row_index):
+                raise RuntimeError("回读验证失败，本地快照已保留")
+
+        if is_result:
+            result_or_payload.lark_url = url
         return url
+
+    def _targeted_row_matches(
+        self,
+        url: str,
+        expected_sheet: Mapping[str, Any],
+        row_index: int,
+    ) -> bool:
+        sheet_row = row_index + 2
+        last_column = _column_letter(len(expected_sheet["columns"]))
+        requested_range = f"A{sheet_row}:{last_column}{sheet_row}"
+        response = self.command_runner(
+            [
+                "lark-cli",
+                "sheets",
+                "+table-get",
+                "--url",
+                url,
+                "--sheet-name",
+                expected_sheet["name"],
+                "--range",
+                requested_range,
+                "--no-header",
+                "--as",
+                "user",
+                "--format",
+                "json",
+            ],
+            None,
+        )
+        if response.get("ok") is not True:
+            return False
+        data = response.get("data")
+        if not isinstance(data, Mapping):
+            return False
+        sheets = data.get("sheets")
+        if not isinstance(sheets, list) or len(sheets) != 1:
+            return False
+        actual_sheet = sheets[0]
+        if not isinstance(actual_sheet, Mapping):
+            return False
+        if actual_sheet.get("name") != expected_sheet["name"]:
+            return False
+        if _parse_a1_range(actual_sheet.get("range")) != (
+            1,
+            sheet_row,
+            len(expected_sheet["columns"]),
+            sheet_row,
+        ):
+            return False
+        rows = actual_sheet.get("data")
+        if not isinstance(rows, list) or len(rows) != 1:
+            return False
+        return _sentinel_matches(
+            expected_sheet, expected_sheet["data"][row_index], rows[0]
+        )
 
     def _require_verified_user(self) -> None:
         status = self.command_runner(
@@ -383,11 +463,13 @@ def _created_url(response: Mapping[str, Any]) -> str:
     return data.get("url") if isinstance(data.get("url"), str) else ""
 
 
-def _readback_matches(expected: Mapping[str, Any], actual: Any) -> bool:
+def _readback_structure_matches(expected: Mapping[str, Any], actual: Any) -> bool:
     if not isinstance(actual, Mapping) or not isinstance(actual.get("sheets"), list):
         return False
     expected_sheets = expected["sheets"]
     actual_sheets = actual["sheets"]
+    if not all(isinstance(sheet, Mapping) for sheet in actual_sheets):
+        return False
     if [sheet.get("name") for sheet in actual_sheets] != list(SHEET_ORDER):
         return False
     if len(expected_sheets) != len(actual_sheets):
@@ -398,30 +480,71 @@ def _readback_matches(expected: Mapping[str, Any], actual: Any) -> bool:
         actual_sheet = actual_by_name.get(expected_sheet["name"])
         if not isinstance(actual_sheet, Mapping):
             return False
-        actual_rows = actual_sheet.get("data")
-        if not isinstance(actual_rows, list) or len(actual_rows) != len(
-            expected_sheet["data"]
-        ):
+        if actual_sheet.get("columns") != expected_sheet["columns"]:
             return False
-
-    sentinel_names = ["检查结果", "经营总览"]
-    detail_candidates = [
-        sheet["name"]
-        for sheet in expected_sheets
-        if sheet["name"] not in {"检查结果", "经营总览", "指标口径", "运行记录"}
-        and sheet["data"]
-    ]
-    sentinel_names.extend(detail_candidates[:2])
-    expected_by_name = {sheet["name"]: sheet for sheet in expected_sheets}
-    for name in sentinel_names:
-        expected_sheet = expected_by_name[name]
-        expected_rows = expected_sheet["data"]
-        actual_rows = actual_by_name[name].get("data", [])
-        if expected_rows and not _sentinel_matches(
-            expected_sheet, expected_rows[0], actual_rows[0]
+        used_range = _parse_a1_range(actual_sheet.get("range"))
+        if used_range != (
+            1,
+            1,
+            len(expected_sheet["columns"]),
+            len(expected_sheet["data"]) + 1,
         ):
             return False
     return True
+
+
+def _sentinel_rows(
+    expected: Mapping[str, Any],
+) -> list[tuple[Mapping[str, Any], int]]:
+    expected_by_name = {sheet["name"]: sheet for sheet in expected["sheets"]}
+    names = ["检查结果", "经营总览"]
+    detail_names: list[str] = []
+    for name in ("用户分层", "销售承接"):
+        sheet = expected_by_name[name]
+        if sheet["data"]:
+            detail_names.append(name)
+    if len(detail_names) < 2:
+        for name in SHEET_ORDER[2:10]:
+            if name not in detail_names and expected_by_name[name]["data"]:
+                detail_names.append(name)
+                if len(detail_names) == 2:
+                    break
+    names.extend(detail_names)
+
+    sentinels: list[tuple[Mapping[str, Any], int]] = []
+    for name in names:
+        sheet = expected_by_name[name]
+        row_count = len(sheet["data"])
+        if not row_count:
+            continue
+        for row_index in sorted({0, row_count // 2, row_count - 1}):
+            sentinels.append((sheet, row_index))
+    return sentinels
+
+
+_A1_RANGE = re.compile(r"^([A-Z]+)([1-9]\d*):([A-Z]+)([1-9]\d*)$")
+
+
+def _parse_a1_range(value: Any) -> tuple[int, int, int, int] | None:
+    if not isinstance(value, str):
+        return None
+    match = _A1_RANGE.fullmatch(value)
+    if match is None:
+        return None
+    start_column, start_row, end_column, end_row = match.groups()
+    return (
+        _column_number(start_column),
+        int(start_row),
+        _column_number(end_column),
+        int(end_row),
+    )
+
+
+def _column_number(letters: str) -> int:
+    number = 0
+    for letter in letters:
+        number = number * 26 + ord(letter) - ord("A") + 1
+    return number
 
 
 def _sentinel_matches(
@@ -433,7 +556,7 @@ def _sentinel_matches(
     for column, expected, actual in zip(
         expected_sheet["columns"], expected_row, actual_row, strict=True
     ):
-        if dtypes.get(column) == "datetime64[ns]":
+        if dtypes.get(column) == "datetime64[ns]" or column == "data_updated_at":
             if expected is None or actual is None:
                 if expected != actual:
                     return False
@@ -446,9 +569,52 @@ def _sentinel_matches(
                 or expected_date != actual_date
             ):
                 return False
+        elif (
+            dtypes.get(column) == "object"
+            and isinstance(expected, (Integral, Real, Decimal))
+            and not isinstance(expected, bool)
+            and isinstance(actual, str)
+        ):
+            if not _finite_numeric_string_matches(expected, actual):
+                return False
+        elif (
+            isinstance(expected, (Real, Decimal))
+            and not isinstance(expected, bool)
+            and isinstance(actual, (Real, Decimal))
+            and not isinstance(actual, bool)
+        ):
+            if not (
+                math.isfinite(float(expected))
+                and math.isfinite(float(actual))
+                and math.isclose(
+                    float(expected),
+                    float(actual),
+                    rel_tol=1e-12,
+                    abs_tol=1e-12,
+                )
+            ):
+                return False
         elif expected != actual:
             return False
     return True
+
+
+_JSON_NUMBER = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$")
+
+
+def _finite_numeric_string_matches(expected: Real | Decimal, actual: str) -> bool:
+    if _JSON_NUMBER.fullmatch(actual) is None:
+        return False
+    try:
+        expected_number = Decimal(str(_json_value(expected)))
+        actual_number = Decimal(actual)
+    except (InvalidOperation, ValueError):
+        return False
+    return (
+        expected_number.is_finite()
+        and actual_number.is_finite()
+        and expected_number == actual_number
+    )
 
 
 def _iso_date(value: Any) -> date | None:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from review_pack.catalog import SHEET_ORDER
-from review_pack.lark_writer import LarkWorkbookWriter
+from review_pack.lark_writer import LarkWorkbookWriter, _workbook_payload
 from review_pack.models import CheckResult, ModuleResult, ReviewPackResult, ReviewRequest
 
 
@@ -81,10 +81,65 @@ def successful_runner(calls: list[tuple[list[str], str | None]]):
             expected_payload = json.loads(stdin)
             return {"ok": True, "data": {"spreadsheet": {"url": URL}}}
         if "+table-get" in argv:
-            return {"ok": True, "data": expected_payload}
+            if "--sheet-name" in argv:
+                return _targeted_readback(expected_payload, argv)
+            return {"ok": True, "data": _full_readback(expected_payload)}
         raise AssertionError(argv)
 
     return fake
+
+
+def _column_letter(number: int) -> str:
+    result = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _full_readback(payload, *, truncate=False):
+    copied = json.loads(json.dumps(payload))
+    for sheet in copied["sheets"]:
+        last_column = _column_letter(len(sheet["columns"]))
+        sheet["range"] = f"A1:{last_column}{len(sheet['data']) + 1}"
+        if truncate and len(sheet["data"]) > 2:
+            sheet["data"] = sheet["data"][:2] + [sheet["data"][2][:3]]
+    return copied
+
+
+def _targeted_readback(payload, argv):
+    name = argv[argv.index("--sheet-name") + 1]
+    requested_range = argv[argv.index("--range") + 1]
+    sheet = next(sheet for sheet in payload["sheets"] if sheet["name"] == name)
+    row_number = int(requested_range.split(":", 1)[0][1:])
+    return {
+        "ok": True,
+        "data": {
+            "sheets": [
+                {
+                    "name": name,
+                    "columns": [f"col{index}" for index in range(1, len(sheet["columns"]) + 1)],
+                    "data": [sheet["data"][row_number - 2]],
+                    "range": requested_range,
+                }
+            ]
+        },
+    }
+
+
+def _result_with_sample_rows() -> ReviewPackResult:
+    result = sample_result()
+    for module_name in ("overview", "user_stage", "sales_funnel"):
+        original = result.modules[module_name].rows[0]
+        result.modules[module_name].rows = [
+            {**original, "dimension_value": f"样本{index}", "current_value": index}
+            for index in range(1, 6)
+        ]
+    result.checks = [
+        CheckResult(f"check-{index}", "info", "passed", "overview", f"检查{index}")
+        for index in range(1, 6)
+    ]
+    return result
 
 
 class LarkWorkbookWriterTest(unittest.TestCase):
@@ -174,8 +229,8 @@ class LarkWorkbookWriterTest(unittest.TestCase):
 
         def fake(argv, stdin=None):
             response = base(argv, stdin)
-            if "+table-get" in argv:
-                response["data"]["sheets"][1]["data"][0][0] = "被改写"
+            if "+table-get" in argv and "--sheet-name" in argv:
+                response["data"]["sheets"][0]["data"][0][0] = "被改写"
             return response
 
         with self.assertRaisesRegex(RuntimeError, "回读验证失败"):
@@ -220,12 +275,16 @@ class LarkWorkbookWriterTest(unittest.TestCase):
 
         def fake(argv, stdin=None):
             response = base(argv, stdin)
-            if "+table-get" in argv:
+            if "+table-get" in argv and "--sheet-name" in argv:
                 for sheet in response["data"]["sheets"]:
+                    name = argv[argv.index("--sheet-name") + 1]
+                    payload = json.loads(
+                        next(stdin for call, stdin in calls if "+workbook-create" in call)
+                    )
+                    expected = next(item for item in payload["sheets"] if item["name"] == name)
                     date_columns = {
-                        index
-                        for index, column in enumerate(sheet["columns"])
-                        if sheet["dtypes"].get(column) == "datetime64[ns]"
+                        index for index, column in enumerate(expected["columns"])
+                        if expected["dtypes"].get(column) == "datetime64[ns]"
                     }
                     for row in sheet["data"]:
                         for index in date_columns:
@@ -235,19 +294,96 @@ class LarkWorkbookWriterTest(unittest.TestCase):
 
         self.assertEqual(LarkWorkbookWriter(fake).write(sample_result()), URL)
 
+    def test_snapshot_iso_datetime_string_matches_readback_date_for_updated_at(self):
+        calls = []
+        base = successful_runner(calls)
+        result = sample_result()
+        for module in result.modules.values():
+            for row in module.rows:
+                row["data_updated_at"] = "2026-07-16T19:12:49"
+
+        def fake(argv, stdin=None):
+            response = base(argv, stdin)
+            if "+table-get" in argv and "--sheet-name" in argv:
+                name = argv[argv.index("--sheet-name") + 1]
+                if name in {"经营总览", "用户分层", "销售承接"}:
+                    response["data"]["sheets"][0]["data"][0][12] = "2026-07-16"
+            return response
+
+        self.assertEqual(LarkWorkbookWriter(fake).write(result), URL)
+
+    def test_object_columns_accept_lark_string_form_of_written_numeric_values(self):
+        calls = []
+        base = successful_runner(calls)
+
+        def fake(argv, stdin=None):
+            response = base(argv, stdin)
+            if "+table-get" in argv and "--sheet-name" in argv:
+                name = argv[argv.index("--sheet-name") + 1]
+                if name == "检查结果":
+                    payload = json.loads(
+                        next(value for call, value in calls if "+workbook-create" in call)
+                    )
+                    expected = next(
+                        sheet for sheet in payload["sheets"] if sheet["name"] == name
+                    )
+                    row_number = int(argv[argv.index("--range") + 1].split(":")[0][1:])
+                    expected_value = expected["data"][row_number - 2][5]
+                    if expected_value is not None:
+                        response["data"]["sheets"][0]["data"][0][5] = str(expected_value)
+            return response
+
+        result = sample_result()
+        result.checks[0] = CheckResult(
+            "passed", "info", "passed", "overview", "模块成功", actual=59749.0
+        )
+        result.checks[1] = CheckResult(
+            "warning", "warning", "warning", "user_stage", "需要关注", actual="未知"
+        )
+
+        self.assertEqual(LarkWorkbookWriter(fake).write(result), URL)
+
     def test_iso_z_datetime_matches_same_readback_date(self):
         calls = []
         base = successful_runner(calls)
 
         def fake(argv, stdin=None):
             response = base(argv, stdin)
-            if "+table-get" in argv:
-                sheet = response["data"]["sheets"][1]
-                index = sheet["columns"].index("data_updated_at")
-                sheet["data"][0][index] = "2026-07-16T23:59:59Z"
+            if "+table-get" in argv and "--sheet-name" in argv:
+                name = argv[argv.index("--sheet-name") + 1]
+                if name == "经营总览":
+                    sheet = response["data"]["sheets"][0]
+                    sheet["data"][0][12] = "2026-07-16T23:59:59Z"
             return response
 
         self.assertEqual(LarkWorkbookWriter(fake).write(sample_result()), URL)
+
+    def test_float_round_trip_noise_does_not_fail_readback(self):
+        calls = []
+        base = successful_runner(calls)
+
+        def fake(argv, stdin=None):
+            response = base(argv, stdin)
+            if "+table-get" in argv and "--sheet-name" in argv:
+                if argv[argv.index("--sheet-name") + 1] == "经营总览":
+                    response["data"]["sheets"][0]["data"][0][7] = 0.2500000000000004
+            return response
+
+        self.assertEqual(LarkWorkbookWriter(fake).write(sample_result()), URL)
+
+    def test_material_numeric_change_still_fails_readback(self):
+        calls = []
+        base = successful_runner(calls)
+
+        def fake(argv, stdin=None):
+            response = base(argv, stdin)
+            if "+table-get" in argv and "--sheet-name" in argv:
+                if argv[argv.index("--sheet-name") + 1] == "经营总览":
+                    response["data"]["sheets"][0]["data"][0][7] = 0.251
+            return response
+
+        with self.assertRaisesRegex(RuntimeError, "回读验证失败"):
+            LarkWorkbookWriter(fake).write(sample_result())
 
     def test_invalid_datetime_suffix_fails_readback(self):
         calls = []
@@ -255,10 +391,11 @@ class LarkWorkbookWriterTest(unittest.TestCase):
 
         def fake(argv, stdin=None):
             response = base(argv, stdin)
-            if "+table-get" in argv:
-                sheet = response["data"]["sheets"][1]
-                index = sheet["columns"].index("data_updated_at")
-                sheet["data"][0][index] = "2026-07-16-invalid"
+            if "+table-get" in argv and "--sheet-name" in argv:
+                name = argv[argv.index("--sheet-name") + 1]
+                if name == "经营总览":
+                    sheet = response["data"]["sheets"][0]
+                    sheet["data"][0][12] = "2026-07-16-invalid"
             return response
 
         with self.assertRaisesRegex(RuntimeError, "回读验证失败"):
@@ -303,6 +440,114 @@ class LarkWorkbookWriterTest(unittest.TestCase):
             LarkWorkbookWriter(fake).write(sample_result())
 
         self.assertNotIn(secret, str(caught.exception))
+
+    def test_truncated_full_readback_uses_ranges_then_checks_first_middle_last_rows(self):
+        result = _result_with_sample_rows()
+        payload = _workbook_payload(result)
+        calls = []
+
+        def fake(argv, stdin=None):
+            calls.append((argv, stdin))
+            if "+table-get" in argv and "--sheet-name" not in argv:
+                return {"ok": True, "data": _full_readback(payload, truncate=True)}
+            if "+table-get" in argv:
+                return _targeted_readback(payload, argv)
+            raise AssertionError(argv)
+
+        self.assertEqual(LarkWorkbookWriter(fake).verify(URL, result), URL)
+        targeted = [argv for argv, _ in calls if "--sheet-name" in argv]
+        by_sheet = {}
+        for argv in targeted:
+            by_sheet.setdefault(argv[argv.index("--sheet-name") + 1], []).append(
+                argv[argv.index("--range") + 1]
+            )
+            self.assertIn("--no-header", argv)
+            self.assertEqual(argv[-4:], ["--as", "user", "--format", "json"])
+        self.assertEqual(set(by_sheet), {"检查结果", "经营总览", "用户分层", "销售承接"})
+        self.assertEqual(by_sheet["检查结果"], ["A2:H2", "A4:H4", "A6:H6"])
+        self.assertEqual(by_sheet["经营总览"], ["A2:N2", "A4:N4", "A6:N6"])
+
+    def test_verify_rejects_wrong_used_range_even_when_prefix_data_looks_valid(self):
+        result = sample_result()
+        payload = _workbook_payload(result)
+        readback = _full_readback(payload)
+        readback["sheets"][1]["range"] = "A1:N99"
+
+        def fake(argv, stdin=None):
+            return {"ok": True, "data": readback}
+
+        with self.assertRaisesRegex(RuntimeError, "回读验证失败"):
+            LarkWorkbookWriter(fake).verify(URL, payload)
+
+    def test_verify_rejects_missing_targeted_middle_or_last_row(self):
+        result = _result_with_sample_rows()
+        payload = _workbook_payload(result)
+
+        for missing_range in ("A4:N4", "A6:N6"):
+            with self.subTest(missing_range=missing_range):
+                def fake(argv, stdin=None):
+                    if "--sheet-name" not in argv:
+                        return {
+                            "ok": True,
+                            "data": _full_readback(payload, truncate=True),
+                        }
+                    response = _targeted_readback(payload, argv)
+                    if argv[argv.index("--sheet-name") + 1] == "用户分层" and argv[
+                        argv.index("--range") + 1
+                    ] == missing_range:
+                        response["data"]["sheets"][0]["data"] = []
+                    return response
+
+                with self.assertRaisesRegex(RuntimeError, "回读验证失败"):
+                    LarkWorkbookWriter(fake).verify(URL, payload)
+
+    def test_verify_rejects_wrong_targeted_range(self):
+        result = sample_result()
+        payload = _workbook_payload(result)
+
+        def fake(argv, stdin=None):
+            if "--sheet-name" not in argv:
+                return {"ok": True, "data": _full_readback(payload)}
+            response = _targeted_readback(payload, argv)
+            response["data"]["sheets"][0]["range"] = "A3:H3"
+            return response
+
+        with self.assertRaisesRegex(RuntimeError, "回读验证失败"):
+            LarkWorkbookWriter(fake).verify(URL, payload)
+
+    def test_verify_handles_aa_columns_in_used_and_targeted_ranges(self):
+        result = sample_result()
+        result.modules["overview"].rows[0].update(
+            {f"extra_{index}": index for index in range(1, 14)}
+        )
+        payload = _workbook_payload(result)
+        calls = []
+
+        def fake(argv, stdin=None):
+            calls.append((argv, stdin))
+            if "--sheet-name" not in argv:
+                return {"ok": True, "data": _full_readback(payload)}
+            return _targeted_readback(payload, argv)
+
+        self.assertEqual(LarkWorkbookWriter(fake).verify(URL, payload), URL)
+        overview = next(
+            argv for argv, _ in calls
+            if "--sheet-name" in argv and argv[argv.index("--sheet-name") + 1] == "经营总览"
+        )
+        self.assertEqual(overview[overview.index("--range") + 1], "A2:AA2")
+
+    def test_verify_rejects_failed_targeted_call(self):
+        result = sample_result()
+        payload = _workbook_payload(result)
+
+        def fake(argv, stdin=None):
+            if "--sheet-name" not in argv:
+                return {"ok": True, "data": _full_readback(payload)}
+            return {"ok": False, "error": {"message": "secret"}}
+
+        with self.assertRaisesRegex(RuntimeError, "回读验证失败") as caught:
+            LarkWorkbookWriter(fake).verify(URL, payload)
+        self.assertNotIn("secret", str(caught.exception))
 
 
 if __name__ == "__main__":
