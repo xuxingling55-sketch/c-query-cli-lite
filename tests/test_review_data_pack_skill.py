@@ -79,6 +79,8 @@ class ReviewDataPackSkillContractTest(unittest.TestCase):
         self.assertIn("无论成功或失败", formal)
         self.assertIn("只汇报且必须恰好汇报以下三项", formal)
         self.assertIn("不得增加第四项", formal)
+        self.assertIn("回读失败但 `lark_url` 已返回", formal)
+        self.assertIn("不得重跑创建", formal)
 
     def test_formal_contract_has_no_conflicting_extra_output_instructions(self):
         for phrase in (
