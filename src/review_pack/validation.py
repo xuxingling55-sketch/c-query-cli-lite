@@ -78,6 +78,7 @@ _BOUNDED_RATE_MARKERS = (
     "接通率",
     "添加率",
 )
+_OPTIONAL_SOURCE_METRICS = {"企微添加人数", "企微添加率"}
 
 
 def _result(
@@ -111,6 +112,15 @@ def _number(value: Any) -> bool:
     except (TypeError, OverflowError):
         finite = getattr(value, "is_finite", None)
         return bool(finite()) if callable(finite) else False
+
+
+def _optional_source_missing(row: Mapping[str, Any]) -> bool:
+    return (
+        row.get("metric") in _OPTIONAL_SOURCE_METRICS
+        and row.get("source_version") == "data_source_missing"
+        and "data_source_missing" in str(row.get("definition_id", ""))
+        and "数据源未接入" in str(row.get("dimension_value", ""))
+    )
 
 
 def _group_key(row: Mapping[str, Any], fields: Sequence[str]) -> tuple[Any, ...]:
@@ -519,7 +529,7 @@ def _check_rows(module: str, rows: list[dict], request_end: date) -> list[CheckR
                 not allowed_current_only_missing
                 and not allowed_formula_null
                 and not _number(value)
-                and row.get("source_version") != "data_source_missing"
+                and not (_optional_source_missing(row) and value is None)
             ):
                 checks.append(
                     _result(
@@ -785,7 +795,7 @@ def validate_pack(
                         actual=", ".join(missing_metrics),
                     )
                 )
-        if any(row.get("source_version") == "data_source_missing" for row in rows):
+        if any(_optional_source_missing(row) for row in rows):
             checks.append(
                 _result(
                     "optional_source",

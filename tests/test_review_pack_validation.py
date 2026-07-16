@@ -347,19 +347,104 @@ class ReviewPackValidationTest(unittest.TestCase):
         self.assertIn("营收", failures[0].message)
 
     def test_optional_metric_source_is_a_warning(self):
-        unavailable = row(
-            "企微添加人数",
-            source_version="data_source_missing",
-            definition_id="sales_funnel.wechat.data_source_missing.v1",
-            current_value="数据源未接入",
-            last_year_value="数据源未接入",
-        )
+        unavailable = [
+            row(
+                metric,
+                dimension_type="用户层级×学段",
+                dimension_value="新增×1–3 年级×数据源未接入",
+                source_version="data_source_missing",
+                definition_id="sales_funnel.wechat.data_source_missing.v1",
+                current_value=None,
+                last_year_value=None,
+            )
+            for metric in ("企微添加人数", "企微添加率")
+        ]
 
-        checks = validate_pack(pack_with_rows("sales_funnel", [unavailable]))
+        checks = validate_pack(pack_with_rows("sales_funnel", unavailable))
 
         optional = [item for item in checks if item.check_id == "optional_source"]
         self.assertEqual(len(optional), 1)
         self.assertEqual(optional[0].status, "warning")
+        self.assertFalse(
+            any(
+                item.status == "failed"
+                and item.check_id.startswith(("numeric_value", "formula"))
+                for item in checks
+            )
+        )
+
+    def test_sales_numeric_rows_validate_formulas_and_conservation(self):
+        overrides = {
+            "dimension_type": "用户层级×学段",
+            "dimension_value": "新增×1–3 年级",
+            "source_version": "v2;event_ordered_nested_funnel",
+            "definition_id": "sales_funnel.nested_event_ordered.v2",
+        }
+        rows = [
+            row("线索领取人数", current_value=50, last_year_value=40, **overrides),
+            row("电话拨打人数", current_value=20, last_year_value=10, **overrides),
+            row("有效接通人数", current_value=8, last_year_value=4, **overrides),
+            row("有效接通率", current_value=0.4, last_year_value=0.4, **overrides),
+            row("未有效接通人数", current_value=12, last_year_value=6, **overrides),
+            row("转化人数", current_value=10, last_year_value=8, **overrides),
+            row("转化率", current_value=0.2, last_year_value=0.2, **overrides),
+            row("转化营收", current_value=100, last_year_value=80, **overrides),
+            row("客单价", current_value=10, last_year_value=10, **overrides),
+            row("ARPU", current_value=2, last_year_value=2, **overrides),
+        ]
+
+        checks = validate_pack(pack_with_rows("sales_funnel", rows))
+
+        self.assertTrue(
+            any(
+                item.check_id == "sales_conservation" and item.status == "passed"
+                for item in checks
+            )
+        )
+        for check_id in ("formula_conversion", "formula_aov", "formula_arpu"):
+            self.assertTrue(
+                any(item.check_id == check_id and item.status == "passed" for item in checks)
+            )
+
+    def test_sales_numeric_strings_fail_instead_of_being_parsed(self):
+        invalid = row(
+            "线索领取人数",
+            current_value="50",
+            last_year_value="40",
+            dimension_type="用户层级×学段",
+            dimension_value="新增×1–3 年级",
+            source_version="v2;event_ordered_nested_funnel",
+            definition_id="sales_funnel.nested_event_ordered.v2",
+        )
+
+        checks = validate_pack(pack_with_rows("sales_funnel", [invalid]))
+
+        self.assertTrue(
+            any(
+                item.check_id == "numeric_value" and item.status == "failed"
+                for item in checks
+            )
+        )
+
+    def test_data_source_missing_marker_does_not_hide_other_invalid_metrics(self):
+        invalid = row(
+            "转化人数",
+            current_value=None,
+            last_year_value=None,
+            dimension_type="用户层级×学段",
+            dimension_value="新增×1–3 年级×数据源未接入",
+            source_version="data_source_missing",
+            definition_id="sales_funnel.wechat.data_source_missing.v1",
+        )
+
+        checks = validate_pack(pack_with_rows("sales_funnel", [invalid]))
+
+        self.assertTrue(
+            any(
+                item.check_id == "numeric_value" and item.status == "failed"
+                for item in checks
+            )
+        )
 
     def test_cross_module_stage_total_uses_unknown_bucket(self):
         result = pack_with_rows(

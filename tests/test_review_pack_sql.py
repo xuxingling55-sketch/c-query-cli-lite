@@ -290,6 +290,17 @@ class RenderSqlTest(unittest.TestCase):
         self.assertNotIn("call_phone_cnt", wechat)
         self.assertNotIn("call_through_cnt", wechat)
 
+    def test_sales_funnel_keeps_metric_value_numeric_when_wechat_is_missing(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+
+        sql = render_sql(Path("queries/review_pack/sales_funnel.sql"), request)
+        wechat = cte_body(sql, "wechat_metrics", "metrics")
+
+        self.assertNotIn("CAST(value AS VARCHAR)", sql)
+        self.assertIn("CAST(NULL AS DOUBLE)", wechat)
+        self.assertIn("数据源未接入", wechat)
+        self.assertIn("data_source_missing", wechat)
+
     def test_sales_funnel_is_nested_and_orders_follow_contact_events(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
         sql = render_sql(Path("queries/review_pack/sales_funnel.sql"), request)
