@@ -212,6 +212,19 @@ class RenderSqlTest(unittest.TestCase):
         for token in ("FROM products", "FROM user_layer_values", "FROM stage_values"):
             self.assertIn(token, grid)
 
+    def test_product_conversion_counts_only_payers_in_the_active_cohort(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/product_structure.sql"), request)
+
+        audience = cte_body(sql, "product_order_audience", "product_order_layer_audience")
+        summary_actual = cte_body(sql, "summary_actual", "dimension_values")
+        metrics = sql[sql.index("metrics AS (") :]
+
+        self.assertIn("active_cohort_pay_user_id", audience)
+        self.assertIn("COUNT(DISTINCT active_cohort_pay_user_id)", summary_actual)
+        self.assertIn("active_cohort_pay_users / NULLIF(active_users, 0)", metrics)
+        self.assertIn("COUNT(DISTINCT user_id) AS pay_users", summary_actual)
+
     def test_user_stage_keeps_unknowns_and_uses_fixed_dimension_grid(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
         sql = render_sql(Path("queries/review_pack/user_stage.sql"), request)

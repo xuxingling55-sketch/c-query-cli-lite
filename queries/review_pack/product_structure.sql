@@ -181,6 +181,7 @@ product_orders AS (
 product_order_audience AS (
     SELECT
         o.period, o.channel, o.order_id, o.user_id, o.revenue, o.product,
+        CASE WHEN a.user_id IS NOT NULL THEN o.user_id END AS active_cohort_pay_user_id,
         COALESCE(a.user_layer, '未映射') AS user_layer,
         COALESCE(a.stage, '未知学段') AS stage
     FROM product_orders o
@@ -190,21 +191,22 @@ product_order_audience AS (
 product_order_layer_audience AS (
     SELECT
         o.period, o.channel, o.order_id, o.user_id, o.revenue, o.product,
+        CASE WHEN a.user_id IS NOT NULL THEN o.user_id END AS active_cohort_pay_user_id,
         COALESCE(a.user_layer, '未映射') AS user_layer
     FROM product_orders o
     LEFT JOIN active_layer_expanded a
       ON o.period = a.period AND o.channel = a.channel AND o.user_id = a.user_id
 ),
 summary_rows AS (
-    SELECT period, channel, order_id, user_id, revenue,
+    SELECT period, channel, order_id, user_id, active_cohort_pay_user_id, revenue,
            '商品' AS dimension_type, product AS dimension_value
     FROM product_order_audience
     UNION ALL
-    SELECT period, channel, order_id, user_id, revenue,
+    SELECT period, channel, order_id, user_id, active_cohort_pay_user_id, revenue,
            '用户层级×商品', CONCAT(user_layer, '×', product)
     FROM product_order_layer_audience
     UNION ALL
-    SELECT period, channel, order_id, user_id, revenue,
+    SELECT period, channel, order_id, user_id, active_cohort_pay_user_id, revenue,
            '学段×商品', CONCAT(stage, '×', product)
     FROM product_order_audience
 ),
@@ -212,6 +214,7 @@ summary_actual AS (
     SELECT period, channel, dimension_type, dimension_value,
            COUNT(DISTINCT order_id) AS orders,
            COUNT(DISTINCT user_id) AS pay_users,
+           COUNT(DISTINCT active_cohort_pay_user_id) AS active_cohort_pay_users,
            SUM(revenue) AS revenue
     FROM summary_rows
     GROUP BY period, channel, dimension_type, dimension_value
@@ -286,6 +289,7 @@ summary AS (
         g.period, g.channel, g.dimension_type, g.dimension_value,
         COALESCE(s.orders, 0) AS orders,
         COALESCE(s.pay_users, 0) AS pay_users,
+        COALESCE(s.active_cohort_pay_users, 0) AS active_cohort_pay_users,
         COALESCE(s.revenue, 0) AS revenue,
         COALESCE(a.active_users, 0) AS active_users,
         COALESCE(o.total_orders, 0) AS total_orders,
@@ -306,7 +310,7 @@ metrics AS (
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '订单占比', orders / NULLIF(total_orders, 0) FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '付费人数占比', pay_users / NULLIF(total_pay_users, 0) FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '营收占比', revenue / NULLIF(total_revenue, 0) FROM summary
-    UNION ALL SELECT period, channel, dimension_type, dimension_value, '转化率', pay_users / NULLIF(active_users, 0) FROM summary
+    UNION ALL SELECT period, channel, dimension_type, dimension_value, '转化率', active_cohort_pay_users / NULLIF(active_users, 0) FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, '客单价', revenue / NULLIF(pay_users, 0) FROM summary
     UNION ALL SELECT period, channel, dimension_type, dimension_value, 'ARPU', revenue / NULLIF(active_users, 0) FROM summary
 )

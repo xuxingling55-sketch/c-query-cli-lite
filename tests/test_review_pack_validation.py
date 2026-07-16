@@ -49,18 +49,6 @@ def rows_with_orders_minus_1():
     return [row("订单量", current_value=-1, last_year_value=1)]
 
 
-def rows_with_stage_unknown():
-    return [
-        row(
-            "营收",
-            dimension_type="学段",
-            dimension_value="未知",
-            current_value=1,
-            last_year_value=0,
-        )
-    ]
-
-
 def pack_with_rows(module, rows):
     request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", 1000)
     return ReviewPackResult(
@@ -92,7 +80,6 @@ class ReviewPackValidationTest(unittest.TestCase):
             ),
             ("missing_last_year", current_period_only_rows(), "period_complete"),
             ("negative_count", rows_with_orders_minus_1(), "non_negative"),
-            ("unknown_stage", rows_with_stage_unknown(), "stage_unknown"),
         ]
         for name, rows, check_id in cases:
             with self.subTest(name=name):
@@ -179,6 +166,56 @@ class ReviewPackValidationTest(unittest.TestCase):
         self.assertEqual(overlap.status, "warning")
         self.assertFalse(any(item.actual == 0.4 for item in checks))
 
+    def test_non_partition_channel_details_are_summarized_once(self):
+        rows = []
+        for value, private, app, sales in (
+            ("新增×组合品", 120, 50, 60),
+            ("续费×组合品", 90, 40, 45),
+        ):
+            for channel, amount in (
+                ("私域整体", private),
+                ("APP", app),
+                ("销售", sales),
+            ):
+                rows.append(
+                    {
+                        "metric": "营收",
+                        "channel": channel,
+                        "dimension_type": "用户层级×商品",
+                        "dimension_value": value,
+                        "current_value": amount,
+                    }
+                )
+
+        checks = check_channel_sum("product_structure", rows, 0.01)
+
+        self.assertFalse(any(item.status == "failed" for item in checks))
+        warnings = [
+            item
+            for item in checks
+            if item.check_id == "channel_sum_unverifiable"
+        ]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("用户层级×商品", warnings[0].message)
+
+    def test_product_base_dimension_still_fails_real_channel_mismatch(self):
+        rows = [
+            {
+                "metric": "营收",
+                "channel": channel,
+                "dimension_type": "商品",
+                "dimension_value": "组合品",
+                "current_value": value,
+            }
+            for channel, value in (("私域整体", 120), ("APP", 50), ("销售", 60))
+        ]
+
+        checks = check_channel_sum("product_structure", rows, 0.01)
+
+        self.assertTrue(
+            any(item.check_id == "channel_sum" and item.status == "failed" for item in checks)
+        )
+
     def test_dimension_total_includes_unknown_bucket(self):
         result = pack_with_rows(
             "active_efficiency",
@@ -205,14 +242,21 @@ class ReviewPackValidationTest(unittest.TestCase):
             ],
         )
 
+        checks = validate_pack(result)
         failed = {
             item.check_id
-            for item in validate_pack(result)
+            for item in checks
             if item.status == "failed"
         }
 
         self.assertIn("dimension_sum", failed)
-        self.assertIn("stage_unknown", failed)
+        self.assertTrue(
+            any(
+                item.check_id == "stage_unknown_coverage"
+                and item.status == "warning"
+                for item in checks
+            )
+        )
 
     def test_deposit_and_sales_conservation(self):
         deposit_rows = [
@@ -652,13 +696,45 @@ class ReviewPackValidationTest(unittest.TestCase):
             last_year_value=0,
         )
 
-        failed = {
-            item.check_id
-            for item in validate_pack(pack_with_rows("user_stage", [unknown]))
-            if item.status == "failed"
-        }
+        checks = validate_pack(pack_with_rows("user_stage", [unknown]))
 
-        self.assertIn("stage_unknown", failed)
+        self.assertFalse(
+            any(item.check_id == "stage_unknown" and item.status == "failed" for item in checks)
+        )
+        coverage = [
+            item for item in checks if item.check_id == "stage_unknown_coverage"
+        ]
+        self.assertEqual(len(coverage), 1)
+        self.assertEqual(coverage[0].status, "warning")
+        self.assertIn("识别覆盖率", coverage[0].message)
+
+    def test_stage_unknown_coverage_is_one_warning_per_channel_dimension(self):
+        rows = [
+            row(
+                metric,
+                channel="销售",
+                dimension_type="学段",
+                dimension_value=dimension_value,
+                current_value=current,
+                last_year_value=last_year,
+            )
+            for metric, dimension_value, current, last_year in (
+                ("活跃人数", "未知学段", 20, 10),
+                ("活跃人数", "高中", 80, 90),
+                ("营收", "未知学段", 200, 100),
+                ("营收", "高中", 800, 900),
+            )
+        ]
+
+        checks = validate_pack(pack_with_rows("user_stage", rows))
+
+        coverage = [
+            item for item in checks if item.check_id == "stage_unknown_coverage"
+        ]
+        self.assertEqual(len(coverage), 1)
+        self.assertEqual(coverage[0].status, "warning")
+        self.assertIn("本期 80.00%", coverage[0].message)
+        self.assertIn("去年同期 90.00%", coverage[0].message)
 
 
 if __name__ == "__main__":

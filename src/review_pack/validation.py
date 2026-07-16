@@ -79,6 +79,22 @@ _BOUNDED_RATE_MARKERS = (
     "添加率",
 )
 _OPTIONAL_SOURCE_METRICS = {"企微添加人数", "企微添加率"}
+_STRONG_CHANNEL_SUM_DIMENSIONS = {
+    "overview": {None, "渠道", "经营总览"},
+    "active_efficiency": {"渠道"},
+    "product_structure": {"商品"},
+    "deposit": {"用户层级×学段"},
+    "reservoir": {"用户层级×学段"},
+}
+_STAGE_COVERAGE_METRICS = (
+    "活跃人数",
+    "活跃用户",
+    "来源用户数",
+    "付费人数",
+    "订单量",
+    "营收",
+    "付费金额",
+)
 
 
 def _result(
@@ -139,7 +155,7 @@ def _metric_rows(
 def check_channel_sum(
     module: str, rows: list[dict], tolerance: float
 ) -> list[CheckResult]:
-    """Check only additive channel totals; report user overlap as a warning."""
+    """Strong-check only channel partitions proven mutually exclusive and complete."""
     grouped: dict[tuple[Any, ...], dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for row in rows:
         metric = str(row.get("metric", ""))
@@ -157,7 +173,9 @@ def check_channel_sum(
         grouped[key][str(row.get("channel"))] = row
 
     checks: list[CheckResult] = []
-    for (metric, *_), channels in grouped.items():
+    summarized: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    strong_dimensions = _STRONG_CHANNEL_SUM_DIMENSIONS.get(module, set())
+    for (metric, dimension_type, *_), channels in grouped.items():
         if not {"私域整体", "APP", "销售"}.issubset(channels):
             continue
         additive = any(marker in metric for marker in _ADDITIVE_MARKERS) and not any(
@@ -165,6 +183,21 @@ def check_channel_sum(
         )
         overlapping = any(marker in metric for marker in _OVERLAP_MARKERS)
         if not additive and not overlapping:
+            continue
+        strong = dimension_type in strong_dimensions
+        if not strong:
+            if additive:
+                compared, mismatched = summarized[str(dimension_type)]
+                for value_column in _PERIOD_VALUE_COLUMNS:
+                    values = [
+                        channels[channel].get(value_column)
+                        for channel in ("私域整体", "APP", "销售")
+                    ]
+                    if not all(_number(value) for value in values):
+                        continue
+                    compared += 1
+                    mismatched += abs(values[0] - values[1] - values[2]) > tolerance
+                summarized[str(dimension_type)] = compared, mismatched
             continue
         for value_column in _PERIOD_VALUE_COLUMNS:
             private = channels["私域整体"].get(value_column)
@@ -193,6 +226,96 @@ def check_channel_sum(
                     difference=difference,
                 )
             )
+    for dimension_type, (compared, mismatched) in summarized.items():
+        checks.append(
+            _result(
+                "channel_sum_unverifiable",
+                "warning",
+                module,
+                (
+                    f"{dimension_type}不是互斥完备渠道分区，比例不加总；"
+                    f"金额和订单仅汇总提示（{mismatched}/{compared} 项存在差异）"
+                ),
+                actual=mismatched,
+                expected=compared,
+            )
+        )
+    return checks
+
+
+def _check_unknown_stage_coverage(
+    module: str, rows: list[dict]
+) -> list[CheckResult]:
+    """Summarize retained unknown-stage buckets as coverage warnings."""
+    grouped: dict[tuple[Any, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row.get("dimension_type") == "学段":
+            grouped[(row.get("channel"), "学段")].append(row)
+
+    checks: list[CheckResult] = []
+    for (channel, dimension_type), group_rows in grouped.items():
+        by_metric: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for row in group_rows:
+            by_metric[str(row.get("metric"))].append(row)
+        metric = next(
+            (
+                candidate
+                for candidate in _STAGE_COVERAGE_METRICS
+                if candidate in by_metric
+                and any(
+                    row.get("dimension_value") in _UNKNOWN_VALUES
+                    for row in by_metric[candidate]
+                )
+            ),
+            None,
+        )
+        if metric is None:
+            continue
+
+        coverage_by_period: list[float | None] = []
+        unknown_present = False
+        for column in _PERIOD_VALUE_COLUMNS:
+            values = [row.get(column) for row in by_metric[metric]]
+            numeric_values = [value for value in values if _number(value)]
+            unknown = sum(
+                row.get(column)
+                for row in by_metric[metric]
+                if row.get("dimension_value") in _UNKNOWN_VALUES
+                and _number(row.get(column))
+            )
+            total = sum(numeric_values)
+            unknown_present = unknown_present or unknown > 0
+            coverage_by_period.append(
+                None if total <= 0 else max(0.0, min(1.0, (total - unknown) / total))
+            )
+        if not unknown_present:
+            continue
+
+        last_year_coverage, current_coverage = coverage_by_period
+
+        def display(value: float | None) -> str:
+            return "无可用分母" if value is None else f"{value:.2%}"
+
+        available = [value for value in coverage_by_period if value is not None]
+        difference = max((1 - value for value in available), default=None)
+        checks.append(
+            _result(
+                "stage_unknown_coverage",
+                "warning",
+                module,
+                (
+                    f"{channel}{dimension_type}保留未知桶；识别覆盖率："
+                    f"本期 {display(current_coverage)}，"
+                    f"去年同期 {display(last_year_coverage)}"
+                ),
+                actual=(
+                    f"本期 {display(current_coverage)}；"
+                    f"去年同期 {display(last_year_coverage)}"
+                ),
+                expected="100%",
+                difference=difference,
+            )
+        )
     return checks
 
 
@@ -595,11 +718,6 @@ def _check_rows(module: str, rows: list[dict], request_end: date) -> list[CheckR
 
         dimension_type = str(row.get("dimension_type", ""))
         dimension_value = row.get("dimension_value")
-        if dimension_value in _UNKNOWN_VALUES and dimension_type == "学段" and any(
-            _number(row.get(column)) and row.get(column) > 0
-            for column in _PERIOD_VALUE_COLUMNS
-        ):
-            checks.append(_result("stage_unknown", "failed", module, "存在未识别学段"))
         if dimension_value in _UNKNOWN_VALUES and dimension_type in {
             "用户分层",
             "用户层级",
@@ -805,6 +923,7 @@ def validate_pack(
                 )
             )
         checks.extend(_check_rows(module_name, rows, result.request.end))
+        checks.extend(_check_unknown_stage_coverage(module_name, rows))
         checks.extend(_check_keys(module_name, rows))
         checks.extend(check_channel_sum(module_name, rows, tolerance))
         checks.extend(check_formula(module_name, rows, tolerance))
