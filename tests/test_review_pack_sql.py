@@ -169,6 +169,19 @@ class RenderSqlTest(unittest.TestCase):
             self.assertIn(token, products)
         self.assertIn("'price_basis=original_amount'", products)
 
+    def test_overview_service_metrics_cover_all_channels_and_time_is_dynamic(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-31", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/overview.sql"), request)
+        service = cte_body(sql, "service_summary", "base_metrics")
+        targets = cte_body(sql, "target_metrics", "metrics")
+
+        self.assertIn("GROUP BY period, channel", service)
+        self.assertIn("'私域整体'", service)
+        self.assertIn("b.channel = s.channel", sql)
+        self.assertIn("CURRENT_DATE()", targets)
+        self.assertIn("DATEDIFF", targets)
+        self.assertNotIn("'时间进度', CAST(1 AS DOUBLE)", targets)
+
     def test_private_active_denominators_do_not_require_revenue_attribution(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
         root = Path("queries/review_pack")

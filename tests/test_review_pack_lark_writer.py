@@ -56,6 +56,7 @@ def sample_result(snapshot: str = "") -> ReviewPackResult:
                 [
                     {**common, "dimension_type": "用户层级", "dimension_value": "新增", "metric": "活跃人数"},
                     {**common, "dimension_type": "学段", "dimension_value": "初中", "metric": "活跃人数"},
+                    {**common, "dimension_type": "用户层级×学段", "dimension_value": "新增×初中", "metric": "活跃人数"},
                 ],
             ),
             "sales_funnel": ModuleResult(
@@ -233,12 +234,28 @@ class LarkWorkbookWriterTest(unittest.TestCase):
         styles_by_name = {style["name"]: style for style in styles["styles"]}
         self.assertEqual(by_name["用户分层"]["data"][0][2], "新增")
         self.assertEqual(by_name["学段表现"]["data"][0][2], "初中")
+        stage_types = {row[1] for row in by_name["学段表现"]["data"]}
+        self.assertIn("用户层级×学段", stage_types)
         self.assertEqual(by_name["检查结果"]["data"][0][2], "failed")
         self.assertEqual(by_name["检查结果"]["data"][1][2], "warning")
         self.assertEqual(by_name["经营总览"]["dtypes"]["current_value"], "int64")
         self.assertEqual(by_name["经营总览"]["formats"]["current_value"], "#,##0")
         self.assertEqual(by_name["经营总览"]["formats"]["relative_change"], "0.00%")
         self.assertEqual(by_name["运行记录"]["formats"]["target_amount"], "#,##0.00")
+        self.assertEqual(
+            by_name["指标口径"]["columns"][:10],
+            [
+                "module", "metric", "business_definition", "numerator",
+                "denominator", "source_table", "filter_rules",
+                "supported_dimensions", "definition_id", "source_version",
+            ],
+        )
+        run_columns = by_name["运行记录"]["columns"]
+        for column in (
+            "executed_at", "data_updated_at", "deposit_source_range",
+            "reservoir_source_range", "result_source",
+        ):
+            self.assertIn(column, run_columns)
         overview_formats = {
             style["range"]: style["number_format"]
             for style in styles_by_name["经营总览"]["cell_styles"]
@@ -273,7 +290,7 @@ class LarkWorkbookWriterTest(unittest.TestCase):
 
             self.assertTrue(snapshot.is_file())
             self.assertEqual(result.local_snapshot, str(snapshot))
-            self.assertEqual(result.lark_url, "")
+            self.assertEqual(result.lark_url, URL)
 
     def test_readback_detects_row_count_and_sentinel_changes(self):
         calls = []

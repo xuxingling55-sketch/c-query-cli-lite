@@ -101,9 +101,10 @@ class LarkWorkbookWriter:
         if not url:
             raise RuntimeError("飞书工作簿创建失败，本地快照已保留")
 
-        self.verify(url, payload)
-
+        # The workbook already exists at this point. Preserve its address even
+        # when readback fails so callers can recover instead of creating a copy.
         result.lark_url = url
+        self.verify(url, payload)
         return url
 
     def verify(
@@ -257,7 +258,11 @@ def _workbook_payload(result: ReviewPackResult) -> dict[str, list[dict[str, Any]
         for source_row in module.rows:
             row = dict(source_row)
             if module_name == "user_stage" and len(targets) == 2:
-                target = "学段表现" if row.get("dimension_type") == "学段" else "用户分层"
+                target = (
+                    "学段表现"
+                    if "学段" in str(row.get("dimension_type", ""))
+                    else "用户分层"
+                )
             elif targets:
                 target = targets[0]
             else:
@@ -281,6 +286,12 @@ def _workbook_payload(result: ReviewPackResult) -> dict[str, list[dict[str, Any]
                 {
                     "module": module_name,
                     "metric": row.get("metric"),
+                    **_definition_details(
+                        module_name,
+                        str(row.get("metric", "")),
+                        module.rows,
+                        str(row.get("definition_id", "")),
+                    ),
                     "definition_id": row.get("definition_id"),
                     "source_version": row.get("source_version", module.source_version),
                 }
@@ -288,6 +299,7 @@ def _workbook_payload(result: ReviewPackResult) -> dict[str, list[dict[str, Any]
     records["指标口径"] = definitions
 
     request = result.request
+    executed_at = datetime.now().astimezone().replace(microsecond=0).isoformat()
     records["运行记录"] = [
         {
             "activity": request.name,
@@ -297,10 +309,19 @@ def _workbook_payload(result: ReviewPackResult) -> dict[str, list[dict[str, Any]
             ),
             "period_days": request.period_days,
             "target_amount": request.target_amount,
+            "deposit_source_range": _date_range(
+                request.deposit_source_start, request.deposit_source_end
+            ),
+            "reservoir_source_range": _date_range(
+                request.reservoir_source_start, request.reservoir_source_end
+            ),
+            "executed_at": executed_at,
             "module": module_name,
             "module_status": module.status,
             "row_count": len(module.rows),
+            "data_updated_at": _module_updated_at(module.rows),
             "source_version": module.source_version,
+            "result_source": result.local_snapshot or "本次运行内存结果",
         }
         for module_name, module in result.modules.items()
     ]
@@ -310,7 +331,11 @@ def _workbook_payload(result: ReviewPackResult) -> dict[str, list[dict[str, Any]
         if name == "检查结果":
             preferred = _CHECK_COLUMNS
         elif name == "指标口径":
-            preferred = ("module", "metric", "definition_id", "source_version")
+            preferred = (
+                "module", "metric", "business_definition", "numerator",
+                "denominator", "source_table", "filter_rules",
+                "supported_dimensions", "definition_id", "source_version",
+            )
         elif name == "运行记录":
             preferred = (
                 "activity",
@@ -318,15 +343,89 @@ def _workbook_payload(result: ReviewPackResult) -> dict[str, list[dict[str, Any]
                 "last_year_date_range",
                 "period_days",
                 "target_amount",
+                "deposit_source_range",
+                "reservoir_source_range",
+                "executed_at",
                 "module",
                 "module_status",
                 "row_count",
+                "data_updated_at",
                 "source_version",
+                "result_source",
             )
         else:
             preferred = _BUSINESS_COLUMNS
         sheets.append(_typed_sheet(name, records[name], preferred))
     return {"sheets": sheets}
+
+
+_SOURCE_TABLES = {
+    "overview": "dws.topic_order_detail",
+    "active_efficiency": "C端活跃主表；dws.topic_order_detail",
+    "user_stage": "C端活跃主表；用户标签；dws.topic_order_detail",
+    "product_structure": "C端活跃主表；dws.topic_order_detail",
+    "deposit": "定金来源用户清单；dws.topic_order_detail",
+    "reservoir": "蓄水来源用户清单；dws.topic_order_detail",
+    "high_value": "高净值用户标签；C端活跃主表；dws.topic_order_detail",
+    "sales_funnel": "销售线索、外呼、企微及订单来源表",
+}
+
+_FORMULA_PARTS = {
+    "目标完成率": ("目标完成额", "活动目标"),
+    "营收进度与时间进度差": ("目标完成率－时间进度", "不适用"),
+    "业务营收与服务期营收差额": ("营收－服务期营收", "不适用"),
+    "付费转化率": ("付费人数", "活跃人数"),
+    "组合品转化率": ("组合品付费人数", "活跃人数"),
+    "转化率": ("活跃付费人数或转化人数", "活跃人数或线索领取人数"),
+    "尾款率": ("尾款人数", "定金来源用户数"),
+    "转大率": ("转大人数", "蓄水来源用户数"),
+    "活跃蓄水用户转大率": ("活跃蓄水转大人数", "活跃蓄水用户数"),
+    "非活跃蓄水用户转大率": ("非活跃蓄水转大人数", "非活跃蓄水用户数"),
+    "有效接通率": ("有效接通人数", "电话拨打人数"),
+    "线索领取率": ("线索领取人数", "活跃人数"),
+    "企微添加率": ("企微添加人数", "线索领取人数"),
+    "客单价": ("对应营收", "对应付费或转化人数"),
+    "ARPU": ("对应营收", "对应活跃或来源人数"),
+    "组合品客单价": ("组合品营收", "组合品付费人数"),
+    "组合品ARPU": ("组合品营收", "活跃人数"),
+    "订单占比": ("订单量", "同口径渠道订单量总量"),
+    "付费人数占比": ("付费人数", "同口径渠道付费人数总量"),
+    "活跃人数占比": ("活跃人数", "同口径渠道活跃人数总量"),
+    "营收占比": ("营收或付费金额", "同口径渠道营收总量"),
+    "尾款营收占整体营收比例": ("尾款营收", "整体营收"),
+    "高净值营收占私域营收比例": ("高净值营收", "私域营收"),
+}
+
+
+def _definition_details(
+    module: str,
+    metric: str,
+    rows: Sequence[Mapping[str, Any]],
+    definition_id: str,
+) -> dict[str, str]:
+    numerator, denominator = _FORMULA_PARTS.get(metric, ("指标对应去重或汇总结果", "不适用"))
+    dimensions = sorted(
+        {str(row.get("dimension_type")) for row in rows if row.get("dimension_type")}
+    )
+    return {
+        "business_definition": f"按固定复盘口径统计{metric}",
+        "numerator": numerator,
+        "denominator": denominator,
+        "source_table": _SOURCE_TABLES.get(module, "固定模块查询来源"),
+        "filter_rules": f"活动日期、有效用户、排除测试数据；口径ID：{definition_id}",
+        "supported_dimensions": "、".join(dimensions) or "总览",
+    }
+
+
+def _date_range(start: date | None, end: date | None) -> str | None:
+    if start is None or end is None:
+        return None
+    return f"{start.isoformat()}/{end.isoformat()}"
+
+
+def _module_updated_at(rows: Sequence[Mapping[str, Any]]) -> str | None:
+    values = [row.get("data_updated_at") for row in rows if row.get("data_updated_at")]
+    return max((str(value) for value in values), default=None)
 
 
 def _typed_sheet(

@@ -245,12 +245,17 @@ class ReviewPackCliTest(unittest.TestCase):
     def test_lark_write_or_readback_failure_returns_4(self):
         class Writer:
             def write(self, result):
+                result.lark_url = "https://example.feishu.cn/sheets/created-before-readback"
                 raise RuntimeError("回读验证失败")
 
         code, payload = run_main(BASE_ARGS, FakeRunner(), writer_factory=Writer)
         self.assertEqual(code, 4)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error_type"], "lark_write_failed")
+        self.assertEqual(
+            payload["lark_url"],
+            "https://example.feishu.cn/sheets/created-before-readback",
+        )
 
     def test_snapshot_failure_after_lark_success_does_not_return_4(self):
         class Writer:

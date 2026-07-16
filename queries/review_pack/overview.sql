@@ -36,6 +36,10 @@ business_channels AS (
 service_order_rows AS (
     SELECT
         p.period,
+        CASE
+            WHEN o.business_gmv_attribution = '商业化' THEN 'APP'
+            WHEN o.business_gmv_attribution = '电销' THEN '销售'
+        END AS channel,
         o.order_id,
         SUM(o.sub_amount) AS revenue
     FROM periods p
@@ -44,14 +48,19 @@ service_order_rows AS (
     WHERE o.u_user IS NOT NULL
       AND o.is_test_user = 0
       AND o.original_amount >= 39
+      AND o.business_gmv_attribution IN ('商业化', '电销')
       AND (
           array_contains(o.correct_team_names, '商业化-APP')
           OR array_contains(o.correct_team_names, '电销/网销')
       )
-    GROUP BY p.period, o.order_id
+    GROUP BY p.period, channel, o.order_id
 ),
 service_summary AS (
-    SELECT period, SUM(revenue) AS service_revenue
+    SELECT period, channel, SUM(revenue) AS service_revenue
+    FROM service_order_rows
+    GROUP BY period, channel
+    UNION ALL
+    SELECT period, '私域整体', SUM(revenue)
     FROM service_order_rows
     GROUP BY period
 ),
@@ -60,13 +69,13 @@ base_metrics AS (
     UNION ALL SELECT period, channel, '订单量', CAST(orders AS DOUBLE) FROM business_channels
     UNION ALL SELECT period, channel, '付费人数', CAST(users AS DOUBLE) FROM business_channels
     UNION ALL
-    SELECT b.period, '私域整体', '服务期营收', s.service_revenue
-    FROM business_channels b JOIN service_summary s ON b.period = s.period
-    WHERE b.channel = '私域整体'
+    SELECT b.period, b.channel, '服务期营收', s.service_revenue
+    FROM business_channels b JOIN service_summary s
+      ON b.period = s.period AND b.channel = s.channel
     UNION ALL
-    SELECT b.period, '私域整体', '业务营收与服务期营收差额', b.revenue - s.service_revenue
-    FROM business_channels b JOIN service_summary s ON b.period = s.period
-    WHERE b.channel = '私域整体'
+    SELECT b.period, b.channel, '业务营收与服务期营收差额', b.revenue - s.service_revenue
+    FROM business_channels b JOIN service_summary s
+      ON b.period = s.period AND b.channel = s.channel
 ),
 target_metrics AS (
     SELECT '本期' AS period, '私域整体' AS channel, '活动目标' AS metric,
@@ -80,10 +89,25 @@ target_metrics AS (
     UNION ALL
     SELECT period, channel, '目标差额', CAST({{TARGET}} AS DOUBLE) - revenue
     FROM business_channels WHERE period = '本期' AND channel = '私域整体'
-    UNION ALL SELECT '本期', '私域整体', '时间进度', CAST(1 AS DOUBLE)
+    UNION ALL SELECT '本期', '私域整体', '时间进度',
+        LEAST(
+            CAST(1 AS DOUBLE),
+            GREATEST(
+                CAST(0 AS DOUBLE),
+                CAST(DATEDIFF(CURRENT_DATE(), STR_TO_DATE(CAST({{CURRENT_START}} AS VARCHAR), '%Y%m%d')) + 1 AS DOUBLE)
+                / CAST(DATEDIFF(STR_TO_DATE(CAST({{CURRENT_END}} AS VARCHAR), '%Y%m%d'), STR_TO_DATE(CAST({{CURRENT_START}} AS VARCHAR), '%Y%m%d')) + 1 AS DOUBLE)
+            )
+        )
     UNION ALL
     SELECT period, channel, '营收进度与时间进度差',
-           revenue / NULLIF(CAST({{TARGET}} AS DOUBLE), 0) - 1
+           revenue / NULLIF(CAST({{TARGET}} AS DOUBLE), 0) - LEAST(
+               CAST(1 AS DOUBLE),
+               GREATEST(
+                   CAST(0 AS DOUBLE),
+                   CAST(DATEDIFF(CURRENT_DATE(), STR_TO_DATE(CAST({{CURRENT_START}} AS VARCHAR), '%Y%m%d')) + 1 AS DOUBLE)
+                   / CAST(DATEDIFF(STR_TO_DATE(CAST({{CURRENT_END}} AS VARCHAR), '%Y%m%d'), STR_TO_DATE(CAST({{CURRENT_START}} AS VARCHAR), '%Y%m%d')) + 1 AS DOUBLE)
+               )
+           )
     FROM business_channels WHERE period = '本期' AND channel = '私域整体'
 ),
 metrics AS (

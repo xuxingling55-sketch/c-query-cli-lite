@@ -108,23 +108,36 @@ def _sample_runner() -> ReviewPackRunner:
         rows = []
         for metric in spec.metrics:
             value = _sample_value(module_name, metric)
-            for period, updated_at in (
-                ("本期", "2026-07-15"),
-                ("去年同期", "2025-07-15"),
-            ):
-                rows.append(
-                    {
-                        "period": period,
-                        "channel": "私域整体",
-                        "dimension_type": "总览",
-                        "dimension_value": "全部",
-                        "metric": metric,
-                        "value": value,
-                        "source_version": "sample-v1",
-                        "data_updated_at": updated_at,
-                        "definition_id": f"sample-{module_name}-{metric}",
-                    }
+            channels = (
+                ("私域整体", "APP", "销售")
+                if module_name == "overview"
+                and metric in {"营收", "服务期营收", "业务营收与服务期营收差额"}
+                else ("私域整体",)
+            )
+            for channel in channels:
+                channel_value = (
+                    value / 2
+                    if channel in {"APP", "销售"}
+                    and metric in {"营收", "服务期营收"}
+                    else value
                 )
+                for period, updated_at in (
+                    ("本期", "2026-07-15"),
+                    ("去年同期", "2025-07-15"),
+                ):
+                    rows.append(
+                        {
+                            "period": period,
+                            "channel": channel,
+                            "dimension_type": "总览",
+                            "dimension_value": channel,
+                            "metric": metric,
+                            "value": channel_value,
+                            "source_version": "sample-v1",
+                            "data_updated_at": updated_at,
+                            "definition_id": f"sample-{module_name}-{metric}",
+                        }
+                    )
         return rows
 
     return ReviewPackRunner(query, QUERY_ROOT, OUTPUT_ROOT)
@@ -451,6 +464,8 @@ def main(
             writer = (writer_factory or LarkWorkbookWriter)()
             result.lark_url = writer.write(result)
         except Exception:
+            if warning := _try_update_snapshot(result):
+                snapshot_warnings.append(warning)
             payload = _summary(
                 result, ok=False, snapshot_warnings=snapshot_warnings
             )

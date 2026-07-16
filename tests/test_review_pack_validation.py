@@ -622,6 +622,43 @@ class ReviewPackValidationTest(unittest.TestCase):
         checks = validate_pack(pack_with_rows("active_efficiency", rows))
 
         self.assertFalse(any(item.check_id == "period_complete" for item in checks))
+        zero_checks = [item for item in checks if item.check_id == "zero_denominator"]
+        self.assertEqual(len(zero_checks), 2)
+        self.assertTrue(all(item.status == "warning" for item in zero_checks))
+
+    def test_zero_denominator_rejects_fake_zero_rate(self):
+        rows = [
+            row("活跃人数", current_value=0, last_year_value=0),
+            row("付费人数", current_value=0, last_year_value=0),
+            row("付费转化率", current_value=0, last_year_value=0),
+        ]
+
+        checks = validate_pack(pack_with_rows("active_efficiency", rows))
+
+        failures = [
+            item for item in checks
+            if item.check_id == "zero_denominator" and item.status == "failed"
+        ]
+        self.assertEqual(len(failures), 2)
+
+    def test_overview_requires_service_metrics_for_each_channel(self):
+        required = ("营收", "服务期营收", "业务营收与服务期营收差额")
+        rows = [
+            row(metric, channel=channel, dimension_type="经营总览", dimension_value=channel)
+            for channel in ("私域整体", "APP", "销售")
+            for metric in required
+            if not (channel == "APP" and metric == "服务期营收")
+        ]
+
+        checks = validate_pack(pack_with_rows("overview", rows))
+
+        self.assertTrue(any(
+            item.check_id == "required_results_by_channel"
+            and item.status == "failed"
+            and "APP" in item.message
+            and "服务期营收" in item.message
+            for item in checks
+        ))
 
     def test_nonzero_denominator_null_formula_fails(self):
         rows = [

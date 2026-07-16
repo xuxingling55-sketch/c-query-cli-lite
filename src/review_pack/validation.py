@@ -45,6 +45,9 @@ _OVERVIEW_CURRENT_ONLY_METRICS = {
     "时间进度",
     "营收进度与时间进度差",
 }
+_OVERVIEW_ALL_CHANNEL_METRICS = {
+    "营收", "服务期营收", "业务营收与服务期营收差额",
+}
 _NULLABLE_FORMULA_METRICS = {
     "付费转化率",
     "转化率",
@@ -617,18 +620,21 @@ def check_formula(
                     )
                     continue
                 if bottom == 0:
-                    if actual not in (0, None):
-                        checks.append(
-                            _result(
-                                check_id,
-                                "failed",
-                                module,
-                                f"{target}分母为零时必须为零",
-                                actual=actual,
-                                expected=0,
-                                difference=abs(actual),
-                            )
+                    checks.append(
+                        _result(
+                            "zero_denominator",
+                            "warning" if actual is None else "failed",
+                            module,
+                            (
+                                f"{target}分母为零，结果已留空"
+                                if actual is None
+                                else f"{target}分母为零时必须留空，不能写成 0%"
+                            ),
+                            actual=actual,
+                            expected="空值",
+                            difference=(abs(actual) if _number(actual) else None),
                         )
+                    )
                     continue
                 expected = top / bottom
                 if not _number(actual):
@@ -987,6 +993,22 @@ def validate_pack(
                         actual=", ".join(missing_metrics),
                     )
                 )
+        if module_name == "overview":
+            by_channel = defaultdict(set)
+            for row in rows:
+                by_channel[str(row.get("channel"))].add(row.get("metric"))
+            for channel in ("私域整体", "APP", "销售"):
+                missing = sorted(_OVERVIEW_ALL_CHANNEL_METRICS - by_channel[channel])
+                if missing:
+                    checks.append(
+                        _result(
+                            "required_results_by_channel",
+                            "failed",
+                            module_name,
+                            f"{channel}缺少必需指标：{', '.join(missing)}",
+                            actual=", ".join(missing),
+                        )
+                    )
         if any(_optional_source_missing(row) for row in rows):
             checks.append(
                 _result(
