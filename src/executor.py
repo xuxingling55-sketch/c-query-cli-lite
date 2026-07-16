@@ -58,6 +58,7 @@ class SQLExecutor:
         self.sr_config = config.get("starrocks", {})
         self.spark_config = config.get("sparksql", {})
         self.timeout = int(config.get("engine_timeout_seconds", DEFAULT_TIMEOUT))
+        self.planner_timeout_ms = int(config.get("starrocks_planner_timeout_ms", 30000))
 
     def execute(self, sql: str) -> tuple[pd.DataFrame, str, float]:
         """执行 SQL，返回 DataFrame、实际引擎、耗时秒数。"""
@@ -92,6 +93,9 @@ class SQLExecutor:
         )
         try:
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute(
+                    f"SET new_planner_optimize_timeout={self.planner_timeout_ms}"
+                )
                 cur.execute(sql)
                 rows = cur.fetchall()
         except pymysql.err.OperationalError as exc:
