@@ -109,16 +109,19 @@ def _sample_runner() -> ReviewPackRunner:
         for metric in spec.metrics:
             value = _sample_value(module_name, metric)
             channels = (
-                ("私域整体", "APP", "销售")
+                ("私域整体",)
                 if module_name == "overview"
-                and metric in {"营收", "服务期营收", "业务营收与服务期营收差额"}
-                else ("私域整体",)
+                and metric not in {"营收", "服务期营收", "业务营收与服务期营收差额"}
+                else ("私域整体", "APP", "销售")
             )
             for channel in channels:
                 channel_value = (
                     value / 2
                     if channel in {"APP", "销售"}
-                    and metric in {"营收", "服务期营收"}
+                    and not any(
+                        marker in metric
+                        for marker in ("率", "占比", "比例", "客单价", "ARPU", "差")
+                    )
                     else value
                 )
                 for period, updated_at in (

@@ -993,12 +993,17 @@ def validate_pack(
                         actual=", ".join(missing_metrics),
                     )
                 )
-        if module_name == "overview":
+        if spec is not None:
             by_channel = defaultdict(set)
             for row in rows:
                 by_channel[str(row.get("channel"))].add(row.get("metric"))
             for channel in ("私域整体", "APP", "销售"):
-                missing = sorted(_OVERVIEW_ALL_CHANNEL_METRICS - by_channel[channel])
+                required_by_channel = (
+                    _OVERVIEW_ALL_CHANNEL_METRICS
+                    if module_name == "overview"
+                    else set(spec.metrics)
+                )
+                missing = sorted(required_by_channel - by_channel[channel])
                 if missing:
                     checks.append(
                         _result(

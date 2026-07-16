@@ -660,6 +660,22 @@ class ReviewPackValidationTest(unittest.TestCase):
             for item in checks
         ))
 
+    def test_every_core_module_requires_each_metric_by_channel(self):
+        rows = [
+            row("活跃人数", channel="私域整体", dimension_type="渠道", dimension_value="私域整体"),
+            row("活跃人数", channel="销售", dimension_type="渠道", dimension_value="销售"),
+        ]
+
+        checks = validate_pack(pack_with_rows("active_efficiency", rows))
+
+        self.assertTrue(any(
+            item.check_id == "required_results_by_channel"
+            and item.status == "failed"
+            and "APP" in item.message
+            and "活跃人数" in item.message
+            for item in checks
+        ))
+
     def test_nonzero_denominator_null_formula_fails(self):
         rows = [
             row("活跃人数", current_value=50, last_year_value=40),

@@ -50,6 +50,11 @@ def sample_result(snapshot: str = "") -> ReviewPackResult:
                 "success",
                 [{**common, "dimension_type": "总览", "dimension_value": "全部", "metric": "营收"}],
             ),
+            "active_efficiency": ModuleResult(
+                "active_efficiency",
+                "success",
+                [{**common, "dimension_type": "渠道", "dimension_value": "私域整体", "metric": "活跃人数"}],
+            ),
             "user_stage": ModuleResult(
                 "user_stage",
                 "success",
@@ -250,6 +255,19 @@ class LarkWorkbookWriterTest(unittest.TestCase):
                 "supported_dimensions", "definition_id", "source_version",
             ],
         )
+        definitions = {
+            (row[0], row[1]): dict(zip(by_name["指标口径"]["columns"], row))
+            for row in by_name["指标口径"]["data"]
+        }
+        overview_definition = definitions[("overview", "营收")]
+        self.assertEqual(overview_definition["source_table"], "dws.topic_order_detail")
+        self.assertIn("排除测试用户", overview_definition["filter_rules"])
+        active_definition = definitions[("active_efficiency", "活跃人数")]
+        self.assertEqual(
+            active_definition["source_table"],
+            "aws.business_active_user_last_14_day",
+        )
+        self.assertNotIn("排除测试", active_definition["filter_rules"])
         run_columns = by_name["运行记录"]["columns"]
         for column in (
             "executed_at", "data_updated_at", "deposit_source_range",

@@ -359,15 +359,39 @@ def _workbook_payload(result: ReviewPackResult) -> dict[str, list[dict[str, Any]
     return {"sheets": sheets}
 
 
-_SOURCE_TABLES = {
-    "overview": "dws.topic_order_detail",
-    "active_efficiency": "C端活跃主表；dws.topic_order_detail",
-    "user_stage": "C端活跃主表；用户标签；dws.topic_order_detail",
-    "product_structure": "C端活跃主表；dws.topic_order_detail",
-    "deposit": "定金来源用户清单；dws.topic_order_detail",
-    "reservoir": "蓄水来源用户清单；dws.topic_order_detail",
-    "high_value": "高净值用户标签；C端活跃主表；dws.topic_order_detail",
-    "sales_funnel": "销售线索、外呼、企微及订单来源表",
+_MODULE_CONTEXT = {
+    "overview": (
+        "dws.topic_order_detail",
+        "活动期内有效订单；用户编号非空；排除测试用户；APP/销售按业绩归因；服务期另要求原价不低于39元且团队归属有效",
+    ),
+    "active_efficiency": (
+        "aws.business_active_user_last_14_day",
+        "活动期内用户编号非空的活跃记录；APP/销售按业绩归因，私域整体保留全部活跃用户",
+    ),
+    "user_stage": (
+        "aws.business_active_user_last_14_day；dws.topic_order_detail",
+        "活动期活跃用户保留未知层级和未知学段；组合品订单要求用户非空、排除测试用户、原价不低于39元且属于APP/销售",
+    ),
+    "product_structure": (
+        "aws.business_active_user_last_14_day；dws.topic_order_detail",
+        "活动期活跃人群与订单同渠道匹配；订单要求用户非空、排除测试用户、原价不低于39元且属于APP/销售",
+    ),
+    "deposit": (
+        "dws.topic_order_detail；aws.business_active_user_last_14_day",
+        "定金来源期按最早来源时间识别、按最后来源单确定渠道；尾款严格晚于来源时间并排除全部来源单；订单排除测试用户",
+    ),
+    "reservoir": (
+        "dws.topic_order_detail；aws.business_active_user_last_14_day",
+        "蓄水来源期按最早来源时间识别、按最后来源单确定渠道；转大订单位于活动观察期且晚于来源时间；订单排除测试用户",
+    ),
+    "high_value": (
+        "dws.topic_user_active_detail_month；aws.business_active_user_last_14_day；dws.topic_order_detail",
+        "活动首月高净值标签形成来源池；活动前最近合规订单确定APP/销售归因和学段；活动期订单排除测试用户",
+    ),
+    "sales_funnel": (
+        "aws.crm_active_data_pool_day；tmp.niyiqiao_crm_clue_call_record；aws.business_active_user_last_14_day；dws.topic_order_detail",
+        "领取后才计入拨打和接通；转化订单晚于领取或对应通话事件；订单排除测试用户；企微来源未接入时明确留空",
+    ),
 }
 
 _FORMULA_PARTS = {
@@ -405,16 +429,37 @@ def _definition_details(
 ) -> dict[str, str]:
     numerator, denominator = _FORMULA_PARTS.get(metric, ("指标对应去重或汇总结果", "不适用"))
     dimensions = sorted(
-        {str(row.get("dimension_type")) for row in rows if row.get("dimension_type")}
+        {
+            str(row.get("dimension_type"))
+            for row in rows
+            if row.get("metric") == metric and row.get("dimension_type")
+        }
+    )
+    source_table, filter_rules = _MODULE_CONTEXT.get(
+        module, ("固定模块查询来源", "按该模块固定业务规则筛选")
     )
     return {
-        "business_definition": f"按固定复盘口径统计{metric}",
+        "business_definition": _business_definition(metric, numerator, denominator),
         "numerator": numerator,
         "denominator": denominator,
-        "source_table": _SOURCE_TABLES.get(module, "固定模块查询来源"),
-        "filter_rules": f"活动日期、有效用户、排除测试数据；口径ID：{definition_id}",
+        "source_table": source_table,
+        "filter_rules": f"{filter_rules}；口径ID：{definition_id}",
         "supported_dimensions": "、".join(dimensions) or "总览",
     }
+
+
+def _business_definition(metric: str, numerator: str, denominator: str) -> str:
+    if denominator != "不适用":
+        return f"{numerator} ÷ {denominator}"
+    if "差额" in metric or metric.endswith("差"):
+        return numerator
+    if metric.endswith("人数") or metric.endswith("用户数"):
+        return f"满足固定条件的去重用户数（{metric}）"
+    if metric.endswith("订单量"):
+        return f"满足固定条件的去重订单数（{metric}）"
+    if any(marker in metric for marker in ("营收", "金额", "完成额", "目标")):
+        return f"满足固定条件的金额汇总（{metric}）"
+    return f"按该指标固定业务规则统计（{metric}）"
 
 
 def _date_range(start: date | None, end: date | None) -> str | None:
