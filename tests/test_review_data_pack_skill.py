@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -54,6 +55,41 @@ class ReviewDataPackSkillContractTest(unittest.TestCase):
         ):
             with self.subTest(value=value):
                 self.assertIn(value, self.text)
+
+    def test_formal_output_contract_has_one_template_with_exactly_three_fields(self):
+        result_contract = self.text.split("## 结果合同", 1)[1].split(
+            "## 快速检查", 1
+        )[0]
+        self.assertIn("### 正式模式", result_contract)
+        self.assertIn("### 预演模式", result_contract)
+        formal = result_contract.split("### 正式模式", 1)[1].split(
+            "### 预演模式", 1
+        )[0]
+
+        templates = re.findall(r"```text\n(.*?)\n```", formal, flags=re.DOTALL)
+        self.assertEqual(len(templates), 1)
+        lines = [line.strip() for line in templates[0].splitlines() if line.strip()]
+        self.assertEqual(
+            [line.split("：", 1)[0] for line in lines],
+            ["飞书链接", "检查摘要", "失败模块"],
+        )
+        self.assertIn("未生成", lines[0])
+        self.assertIn("错误类型", lines[2])
+        self.assertIn("恢复建议", lines[2])
+        self.assertIn("无论成功或失败", formal)
+        self.assertIn("只汇报且必须恰好汇报以下三项", formal)
+        self.assertIn("不得增加第四项", formal)
+
+    def test_formal_contract_has_no_conflicting_extra_output_instructions(self):
+        for phrase in (
+            "正式模式成功时",
+            "正式成功",
+            "其他模块仍按实际状态汇报",
+            "正式模式若失败",
+            "简要说明错误类型和可恢复信息",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertNotIn(phrase, self.text)
 
     def test_forbids_sql_and_existing_document_changes(self):
         self.assertIn("不得生成或改写 SQL", self.text)
