@@ -26,6 +26,14 @@ class ReviewRequestTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "去年同期无法保持相同月日"):
             ReviewRequest.create("闰日", "2024-02-29", "2024-03-01", "100万")
 
+    def test_rejects_last_year_period_that_loses_a_day(self):
+        with self.assertRaisesRegex(ValueError, "去年同期无法同时保持相同月日和天数"):
+            ReviewRequest.create("跨闰日", "2024-02-28", "2024-03-01", "100万")
+
+    def test_rejects_last_year_period_that_gains_a_day(self):
+        with self.assertRaisesRegex(ValueError, "去年同期无法同时保持相同月日和天数"):
+            ReviewRequest.create("跨闰日", "2025-02-28", "2025-03-01", "100万")
+
     def test_target_units(self):
         self.assertEqual(parse_target("3500万"), 35_000_000)
         self.assertEqual(parse_target("12000000"), 12_000_000)
@@ -33,6 +41,12 @@ class ReviewRequestTest(unittest.TestCase):
     def test_rejects_non_positive_target(self):
         with self.assertRaisesRegex(ValueError, "目标金额必须大于零"):
             ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "0")
+
+    def test_rejects_non_finite_target(self):
+        for value in ("nan", "inf", "-inf"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "目标金额必须是有限正数"):
+                    parse_target(value)
 
     def test_parses_optional_source_windows(self):
         r = ReviewRequest.create(

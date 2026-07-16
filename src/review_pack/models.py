@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import date
+from math import isfinite
 from typing import Any
 
 
@@ -20,6 +21,8 @@ def parse_target(value: str | int | float) -> float:
         amount = float(text) * multiplier
     except ValueError as exc:
         raise ValueError("目标金额格式不正确") from exc
+    if not isfinite(amount):
+        raise ValueError("目标金额必须是有限正数")
     if amount <= 0:
         raise ValueError("目标金额必须大于零")
     return amount
@@ -83,6 +86,8 @@ class ReviewRequest:
             last_year_end = parsed_end.replace(year=parsed_end.year - 1)
         except ValueError as exc:
             raise ValueError("去年同期无法保持相同月日") from exc
+        if (last_year_end - last_year_start) != (parsed_end - parsed_start):
+            raise ValueError("去年同期无法同时保持相同月日和天数")
 
         parsed_deposit_start, parsed_deposit_end = _parse_optional_window(
             "定金", deposit_source_start, deposit_source_end
