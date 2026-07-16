@@ -33,13 +33,6 @@ source_pool_raw AS (
         p.period,
         CAST(m.u_user AS VARCHAR) AS user_id,
         CASE
-            WHEN m.grade_name_month IN ('一年级','二年级','三年级') THEN '1–3 年级'
-            WHEN m.grade_name_month IN ('四年级','五年级','六年级') THEN '4–6 年级'
-            WHEN m.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN '初中'
-            WHEN m.grade_name_month IN ('高一','高二','高三','十年级') THEN '高中'
-            ELSE '未知学段'
-        END AS stage,
-        CASE
             WHEN m.user_strategy_tag_month REGEXP CONCAT(
                 '付费组合品用户-', SUBSTR(CAST(p.start_day AS VARCHAR), 1, 4), '年初中毕业'
             ) THEN '高净值－当年毕业'
@@ -47,7 +40,7 @@ source_pool_raw AS (
                 THEN '高净值－历史大会员可续购'
             WHEN m.user_strategy_tag_month REGEXP '历史大会员用户_不可续购'
                 THEN '高净值－历史大会员不可续购'
-            WHEN m.user_strategy_tag_month REGEXP '付费组合品用户|付费加购品用户'
+            WHEN m.user_strategy_tag_month REGEXP '付费组合品用户|付费加购品用户|付费零售品用户'
                 THEN '高净值－其他组合品'
             ELSE '高净值－未知标签'
         END AS detail_layer,
@@ -56,36 +49,47 @@ source_pool_raw AS (
     JOIN dws.topic_user_active_detail_month m
       ON m.`month` = CAST(SUBSTR(CAST(p.start_day AS VARCHAR), 1, 6) AS INT)
     WHERE m.u_user IS NOT NULL
-      AND m.business_user_pay_status_statistics_month = '高净值用户'
+      AND (
+           m.user_strategy_tag_month IN (
+               '历史大会员用户_可续购',
+               '历史大会员用户_不可续购'
+           )
+        OR m.user_strategy_tag_month REGEXP '^(付费组合品用户|付费加购品用户|付费零售品用户)(-|$)'
+      )
 ),
 source_pool_ranked AS (
     SELECT
-        period, user_id, stage, detail_layer,
+        period, user_id, detail_layer,
         ROW_NUMBER() OVER(
             PARTITION BY period, user_id
             ORDER BY
                 CASE WHEN detail_layer = '高净值－未知标签' THEN 2 ELSE 1 END,
-                CASE WHEN stage = '未知学段' THEN 2 ELSE 1 END,
-                user_strategy_tag_month DESC,
-                stage DESC
+                user_strategy_tag_month DESC
         ) AS fact_rank
     FROM source_pool_raw
 ),
 source_pool AS (
-    SELECT period, user_id, stage, detail_layer
+    SELECT period, user_id, detail_layer
     FROM source_pool_ranked
     WHERE fact_rank = 1
 ),
-attribution_order_rows AS (
+attribution_order_lines AS (
     SELECT
         p.period,
         s.user_id,
         o.order_id,
-        MIN(o.paid_time) AS source_time,
+        o.paid_time AS source_time,
         CASE
-            WHEN o.business_gmv_attribution = '商业化' THEN 'APP'
-            WHEN o.business_gmv_attribution = '电销' THEN '销售'
-        END AS channel
+            WHEN o.business_gmv_attribution = '商业化' THEN 2
+            WHEN o.business_gmv_attribution = '电销' THEN 1
+        END AS channel_priority,
+        CASE
+            WHEN o.grade_name_month IN ('一年级','二年级','三年级') THEN 5
+            WHEN o.grade_name_month IN ('四年级','五年级','六年级') THEN 4
+            WHEN o.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN 3
+            WHEN o.grade_name_month IN ('高一','高二','高三','十年级') THEN 2
+            ELSE 1
+        END AS stage_priority
     FROM source_pool s
     JOIN periods p ON s.period = p.period
     JOIN dws.topic_order_detail o
@@ -95,15 +99,30 @@ attribution_order_rows AS (
       AND o.is_test_user = 0
       AND o.original_amount >= 39
       AND o.business_gmv_attribution IN ('商业化', '电销')
-    GROUP BY p.period, s.user_id, o.order_id,
-        CASE
-            WHEN o.business_gmv_attribution = '商业化' THEN 'APP'
-            WHEN o.business_gmv_attribution = '电销' THEN '销售'
-        END
+),
+attribution_order_rows AS (
+    SELECT
+        period,
+        user_id,
+        order_id,
+        MAX(source_time) AS source_time,
+        CASE MAX(channel_priority)
+            WHEN 2 THEN 'APP'
+            WHEN 1 THEN '销售'
+        END AS channel,
+        CASE MAX(stage_priority)
+            WHEN 5 THEN '1–3 年级'
+            WHEN 4 THEN '4–6 年级'
+            WHEN 3 THEN '初中'
+            WHEN 2 THEN '高中'
+            ELSE '未知学段'
+        END AS stage
+    FROM attribution_order_lines
+    GROUP BY period, user_id, order_id
 ),
 attribution_ranked AS (
     SELECT
-        period, user_id, order_id, source_time, channel,
+        period, user_id, order_id, source_time, channel, stage,
         ROW_NUMBER() OVER(
             PARTITION BY period, user_id
             ORDER BY source_time DESC, order_id DESC
@@ -111,17 +130,20 @@ attribution_ranked AS (
     FROM attribution_order_rows
 ),
 attributed_source_users AS (
-    SELECT period, user_id, channel
+    SELECT period, user_id, channel, stage
     FROM attribution_ranked
     WHERE source_rank = 1
 ),
 source_users AS (
     SELECT
-        s.period, '私域整体' AS channel, s.user_id, s.stage, s.detail_layer
+        s.period, '私域整体' AS channel, s.user_id,
+        COALESCE(a.stage, '未知学段') AS stage, s.detail_layer
     FROM source_pool s
+    LEFT JOIN attributed_source_users a
+      ON s.period = a.period AND s.user_id = a.user_id
     UNION ALL
     SELECT
-        s.period, a.channel, s.user_id, s.stage, s.detail_layer
+        s.period, a.channel, s.user_id, a.stage, s.detail_layer
     FROM source_pool s
     JOIN attributed_source_users a
       ON s.period = a.period AND s.user_id = a.user_id
@@ -411,9 +433,9 @@ independent_metrics AS (
 output_rows AS (
     SELECT
         period, channel, dimension_type, dimension_value, metric, value,
-        'v4;monthly_pool;history_attribution;raw_slice_aggregates' AS source_version,
+        'v5;monthly_tag_pool;order_level_history_attribution' AS source_version,
         CURRENT_TIMESTAMP AS data_updated_at,
-        'high_value.monthly_pool_history_slices.v4' AS definition_id
+        'high_value.monthly_tag_pool_order_history.v5' AS definition_id
     FROM independent_metrics
 )
 SELECT

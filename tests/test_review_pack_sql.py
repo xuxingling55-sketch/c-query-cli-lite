@@ -456,10 +456,11 @@ class RenderSqlTest(unittest.TestCase):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
         sql = render_sql(Path("queries/review_pack/high_value.sql"), request)
 
-        for cte in ("source_pool_raw", "source_pool_ranked", "attribution_order_rows", "attribution_ranked", "attributed_source_users"):
+        for cte in ("source_pool_raw", "source_pool_ranked", "attribution_order_lines", "attribution_order_rows", "attribution_ranked", "attributed_source_users"):
             self.assertIn(f"{cte} AS (", sql)
         source_pool = cte_body(sql, "source_pool_raw", "source_pool_ranked")
-        history = cte_body(sql, "attribution_order_rows", "attribution_ranked")
+        history = cte_body(sql, "attribution_order_lines", "attribution_order_rows")
+        history_orders = cte_body(sql, "attribution_order_rows", "attribution_ranked")
         ranked = cte_body(sql, "attribution_ranked", "attributed_source_users")
         attributed = cte_body(sql, "attributed_source_users", "source_users")
         source_users = cte_body(sql, "source_users", "active_users")
@@ -470,6 +471,7 @@ class RenderSqlTest(unittest.TestCase):
         self.assertIn("o.is_test_user = 0", history)
         self.assertIn("o.original_amount >= 39", history)
         self.assertIn("o.business_gmv_attribution IN ('商业化', '电销')", history)
+        self.assertIn("GROUP BY period, user_id, order_id", history_orders)
         self.assertIn("ROW_NUMBER() OVER", ranked)
         self.assertIn("PARTITION BY period, user_id", ranked)
         self.assertIn("ORDER BY source_time DESC, order_id DESC", ranked)
@@ -477,6 +479,48 @@ class RenderSqlTest(unittest.TestCase):
         self.assertIn("'私域整体' AS channel", source_users)
         self.assertIn("FROM source_pool", source_users)
         self.assertIn("JOIN attributed_source_users", source_users)
+
+    def test_high_value_month_pool_uses_only_confirmed_columns_and_fixed_tags(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/high_value.sql"), request)
+        source_pool = cte_body(sql, "source_pool_raw", "source_pool_ranked")
+
+        self.assertEqual(
+            {"u_user", "user_strategy_tag_month"},
+            set(re.findall(r"\bm\.([a-zA-Z0-9_]+)", source_pool)),
+        )
+        self.assertNotIn("grade_name_month", source_pool)
+        self.assertNotIn("business_user_pay_status_statistics_month", source_pool)
+        for tag in (
+            "历史大会员用户_可续购",
+            "历史大会员用户_不可续购",
+            "付费组合品用户",
+            "付费加购品用户",
+            "付费零售品用户",
+        ):
+            self.assertIn(tag, source_pool)
+
+    def test_high_value_history_collapses_each_order_before_user_attribution(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/high_value.sql"), request)
+        self.assertIn("attribution_order_lines AS (", sql)
+        history_lines = cte_body(sql, "attribution_order_lines", "attribution_order_rows")
+        history_orders = cte_body(sql, "attribution_order_rows", "attribution_ranked")
+        source_users = cte_body(sql, "source_users", "active_users")
+
+        self.assertIn("o.grade_name_month", history_lines)
+        self.assertIn("channel_priority", history_lines)
+        self.assertIn("stage_priority", history_lines)
+        self.assertIn("GROUP BY period, user_id, order_id", history_orders)
+        self.assertIn("MAX(channel_priority)", history_orders)
+        self.assertIn("WHEN 2 THEN 'APP'", history_orders)
+        self.assertIn("WHEN 1 THEN '销售'", history_orders)
+        self.assertIn("MAX(stage_priority)", history_orders)
+        self.assertNotIn("GROUP BY period, user_id, order_id, channel", history_orders)
+        self.assertIn("LEFT JOIN attributed_source_users", source_users)
+        self.assertIn("COALESCE(a.stage, '未知学段')", source_users)
+        self.assertIn("v5;monthly_tag_pool;order_level_history_attribution", sql)
+        self.assertIn("high_value.monthly_tag_pool_order_history.v5", sql)
 
     def test_high_value_builds_three_independent_raw_aggregates(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
@@ -526,7 +570,7 @@ class RenderSqlTest(unittest.TestCase):
         self.assertNotIn("未知", fixed_layers)
         self.assertIn("'高净值－未知标签'", unknown_layers)
         self.assertIn("ELSE '高净值－未知标签'", source_pool)
-        self.assertIn("REGEXP '付费组合品用户|付费加购品用户'", source_pool)
+        self.assertIn("REGEXP '付费组合品用户|付费加购品用户|付费零售品用户'", source_pool)
 
     def test_high_value_reaggregates_combo_and_keeps_one_product_rule(self):
         request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
