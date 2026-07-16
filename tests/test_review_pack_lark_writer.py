@@ -8,6 +8,7 @@ import unittest
 from review_pack.catalog import SHEET_ORDER
 from review_pack.lark_writer import (
     LarkWorkbookWriter,
+    _definition_details,
     _sentinel_matches,
     _workbook_payload,
 )
@@ -154,6 +155,16 @@ def _result_with_sample_rows() -> ReviewPackResult:
 
 
 class LarkWorkbookWriterTest(unittest.TestCase):
+    def test_formula_definitions_are_unique_by_module_and_metric(self):
+        product = _definition_details("product_structure", "转化率", [], "product-v1")
+        sales = _definition_details("sales_funnel", "转化率", [], "sales-v1")
+
+        self.assertEqual(product["numerator"], "同渠道同切面的活跃付费人数")
+        self.assertEqual(product["denominator"], "同渠道同切面的活跃人数")
+        self.assertEqual(sales["numerator"], "同渠道同层级学段的转化人数")
+        self.assertEqual(sales["denominator"], "同渠道同层级学段的线索领取人数")
+        self.assertNotIn("或", product["business_definition"] + sales["business_definition"])
+
     def test_numeric_sentinel_never_treats_bool_as_number(self):
         sheet = {"columns": ["value"], "dtypes": {"value": "int64"}}
 
