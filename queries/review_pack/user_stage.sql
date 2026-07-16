@@ -20,13 +20,51 @@ active_raw AS (
         END AS stage,
         COALESCE(a.business_user_pay_status_statistics_month, '') AS raw_layer,
         a.user_strategy_tag_level2_month AS high_value_tag,
-        COALESCE(a.normal_price_amount, 0) AS pay_amount
+        CASE
+            WHEN a.business_gmv_attribution IN ('商业化', '电销')
+                THEN COALESCE(a.normal_price_amount, 0)
+            ELSE 0
+        END AS private_pay_amount
     FROM periods p
     JOIN aws.business_active_user_last_14_day a
       ON a.day BETWEEN p.start_day AND p.end_day
     WHERE a.u_user IS NOT NULL
 ),
-active_user_channel AS (
+all_active_users AS (
+    SELECT
+        period,
+        user_id,
+        CASE
+            WHEN MAX(CASE WHEN stage = '1–3 年级' THEN 1 ELSE 0 END) = 1 THEN '1–3 年级'
+            WHEN MAX(CASE WHEN stage = '4–6 年级' THEN 1 ELSE 0 END) = 1 THEN '4–6 年级'
+            WHEN MAX(CASE WHEN stage = '初中' THEN 1 ELSE 0 END) = 1 THEN '初中'
+            WHEN MAX(CASE WHEN stage = '高中' THEN 1 ELSE 0 END) = 1 THEN '高中'
+            ELSE '未知学段'
+        END AS stage,
+        CASE
+            WHEN MAX(CASE WHEN raw_layer = '高净值用户' THEN 1 ELSE 0 END) = 1 THEN '高净值汇总'
+            WHEN MAX(CASE WHEN raw_layer = '新增' THEN 1 ELSE 0 END) = 1 THEN '新增'
+            WHEN MAX(CASE WHEN raw_layer = '老未' THEN 1 ELSE 0 END) = 1 THEN '老未'
+            WHEN MAX(CASE WHEN raw_layer = '续费用户' THEN 1 ELSE 0 END) = 1 THEN '续费'
+            ELSE '未映射'
+        END AS user_layer,
+        MAX(CASE WHEN raw_layer = '高净值用户' THEN high_value_tag END) AS high_value_tag,
+        SUM(private_pay_amount) AS pay_amount
+    FROM active_raw
+    GROUP BY period, user_id
+),
+private_active_users AS (
+    SELECT
+        period,
+        '私域整体' AS channel,
+        user_id,
+        stage,
+        user_layer,
+        high_value_tag,
+        pay_amount
+    FROM all_active_users
+),
+channel_active_users AS (
     SELECT
         period,
         channel,
@@ -46,34 +84,17 @@ active_user_channel AS (
             ELSE '未映射'
         END AS user_layer,
         MAX(CASE WHEN raw_layer = '高净值用户' THEN high_value_tag END) AS high_value_tag,
-        SUM(pay_amount) AS pay_amount
+        SUM(private_pay_amount) AS pay_amount
     FROM active_raw
     WHERE channel IS NOT NULL
     GROUP BY period, channel, user_id
+),
+active_user_channel AS (
+    SELECT period, channel, user_id, stage, user_layer, high_value_tag, pay_amount
+    FROM channel_active_users
     UNION ALL
-    SELECT
-        period,
-        '私域整体',
-        user_id,
-        CASE
-            WHEN MAX(CASE WHEN stage = '1–3 年级' THEN 1 ELSE 0 END) = 1 THEN '1–3 年级'
-            WHEN MAX(CASE WHEN stage = '4–6 年级' THEN 1 ELSE 0 END) = 1 THEN '4–6 年级'
-            WHEN MAX(CASE WHEN stage = '初中' THEN 1 ELSE 0 END) = 1 THEN '初中'
-            WHEN MAX(CASE WHEN stage = '高中' THEN 1 ELSE 0 END) = 1 THEN '高中'
-            ELSE '未知学段'
-        END,
-        CASE
-            WHEN MAX(CASE WHEN raw_layer = '高净值用户' THEN 1 ELSE 0 END) = 1 THEN '高净值汇总'
-            WHEN MAX(CASE WHEN raw_layer = '新增' THEN 1 ELSE 0 END) = 1 THEN '新增'
-            WHEN MAX(CASE WHEN raw_layer = '老未' THEN 1 ELSE 0 END) = 1 THEN '老未'
-            WHEN MAX(CASE WHEN raw_layer = '续费用户' THEN 1 ELSE 0 END) = 1 THEN '续费'
-            ELSE '未映射'
-        END,
-        MAX(CASE WHEN raw_layer = '高净值用户' THEN high_value_tag END),
-        SUM(pay_amount)
-    FROM active_raw
-    WHERE channel IS NOT NULL
-    GROUP BY period, user_id
+    SELECT period, channel, user_id, stage, user_layer, high_value_tag, pay_amount
+    FROM private_active_users
 ),
 layer_expanded AS (
     SELECT period, channel, user_id, stage, user_layer, pay_amount
@@ -130,17 +151,41 @@ dimension_rows AS (
     SELECT period, channel, user_id, '用户层级' AS dimension_type,
            user_layer AS dimension_value, pay_amount
     FROM layer_expanded
-    WHERE user_layer <> '未映射'
     UNION ALL
     SELECT period, channel, user_id, '学段', stage, pay_amount
     FROM active_user_channel
-    WHERE stage <> '未知学段'
     UNION ALL
     SELECT period, channel, user_id, '用户层级×学段', CONCAT(user_layer, '×', stage), pay_amount
     FROM layer_expanded
-    WHERE user_layer <> '未映射' AND stage <> '未知学段'
 ),
-summary AS (
+channels AS (
+    SELECT '私域整体' AS channel UNION ALL SELECT 'APP' UNION ALL SELECT '销售'
+),
+user_layer_values AS (
+    SELECT '新增' AS user_layer UNION ALL SELECT '老未' UNION ALL SELECT '续费'
+    UNION ALL SELECT '高净值汇总' UNION ALL SELECT '高净值－当年毕业'
+    UNION ALL SELECT '高净值－历史大会员可续购'
+    UNION ALL SELECT '高净值－历史大会员不可续购'
+    UNION ALL SELECT '高净值－其他组合品' UNION ALL SELECT '未映射'
+),
+stage_values AS (
+    SELECT '1–3 年级' AS stage UNION ALL SELECT '4–6 年级'
+    UNION ALL SELECT '初中' UNION ALL SELECT '高中' UNION ALL SELECT '未知学段'
+),
+dimension_values AS (
+    SELECT '用户层级' AS dimension_type, user_layer AS dimension_value
+    FROM user_layer_values
+    UNION ALL
+    SELECT '学段', stage FROM stage_values
+    UNION ALL
+    SELECT '用户层级×学段', CONCAT(u.user_layer, '×', s.stage)
+    FROM user_layer_values u JOIN stage_values s ON 1 = 1
+),
+dimension_grid AS (
+    SELECT p.period, c.channel, d.dimension_type, d.dimension_value
+    FROM periods p JOIN channels c ON 1 = 1 JOIN dimension_values d ON 1 = 1
+),
+summary_actual AS (
     SELECT
         d.period,
         d.channel,
@@ -157,13 +202,43 @@ summary AS (
       ON d.period = c.period AND d.channel = c.channel AND d.user_id = c.user_id
     GROUP BY d.period, d.channel, d.dimension_type, d.dimension_value
 ),
-channel_totals AS (
+summary AS (
+    SELECT
+        g.period,
+        g.channel,
+        g.dimension_type,
+        g.dimension_value,
+        COALESCE(a.active_users, 0) AS active_users,
+        COALESCE(a.pay_users, 0) AS pay_users,
+        COALESCE(a.pay_amount, 0) AS pay_amount,
+        COALESCE(a.combo_pay_users, 0) AS combo_pay_users,
+        COALESCE(a.combo_orders, 0) AS combo_orders,
+        COALESCE(a.combo_revenue, 0) AS combo_revenue
+    FROM dimension_grid g
+    LEFT JOIN summary_actual a
+      ON g.period = a.period
+     AND g.channel = a.channel
+     AND g.dimension_type = a.dimension_type
+     AND g.dimension_value = a.dimension_value
+),
+channel_totals_actual AS (
     SELECT period, channel,
            COUNT(DISTINCT user_id) AS active_users,
            COUNT(DISTINCT CASE WHEN pay_amount > 0 THEN user_id END) AS pay_users,
            SUM(pay_amount) AS pay_amount
     FROM active_user_channel
     GROUP BY period, channel
+),
+channel_totals AS (
+    SELECT
+        p.period,
+        c.channel,
+        COALESCE(t.active_users, 0) AS active_users,
+        COALESCE(t.pay_users, 0) AS pay_users,
+        COALESCE(t.pay_amount, 0) AS pay_amount
+    FROM periods p JOIN channels c ON 1 = 1
+    LEFT JOIN channel_totals_actual t
+      ON p.period = t.period AND c.channel = t.channel
 ),
 metrics AS (
     SELECT period, channel, dimension_type, dimension_value, '活跃人数' AS metric, CAST(active_users AS DOUBLE) AS value FROM summary

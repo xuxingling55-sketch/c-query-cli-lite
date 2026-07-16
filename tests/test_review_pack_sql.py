@@ -6,6 +6,13 @@ from review_pack.models import ReviewRequest
 from review_pack.sql_loader import NotApplicableError, render_sql
 
 
+def cte_body(sql: str, cte_name: str, next_cte_name: str) -> str:
+    """Return one top-level CTE body for focused structural assertions."""
+    start = sql.lower().index(f"{cte_name.lower()} as (")
+    end = sql.lower().index(f"{next_cte_name.lower()} as (", start)
+    return sql[start:end]
+
+
 class RenderSqlTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = TemporaryDirectory()
@@ -148,6 +155,64 @@ class RenderSqlTest(unittest.TestCase):
         for token in ("u_user IS NOT NULL", "is_test_user = 0", "original_amount >= 39"):
             self.assertIn(token, products)
         self.assertIn("'price_basis=original_amount'", products)
+
+    def test_private_active_denominators_do_not_require_revenue_attribution(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        root = Path("queries/review_pack")
+
+        for name in ("active_efficiency", "user_stage", "product_structure"):
+            sql = render_sql(root / f"{name}.sql", request)
+            all_users = cte_body(sql, "all_active_users", "private_active_users")
+            private_users = cte_body(sql, "private_active_users", "channel_active_users")
+
+            active_source = "from raw" if name == "active_efficiency" else "from active_raw"
+            self.assertIn(active_source, all_users.lower())
+            self.assertNotIn("channel is not null", all_users.lower())
+            self.assertNotIn("business_gmv_attribution in", all_users.lower())
+            self.assertIn("from all_active_users", private_users.lower())
+
+        active = render_sql(root / "active_efficiency.sql", request)
+        raw = cte_body(active, "raw", "all_active_users")
+        self.assertIn("then coalesce(a.normal_price_amount, 0)", raw.lower())
+        self.assertIn("else 0", raw.lower())
+
+    def test_product_structure_has_channels_audience_breakdowns_and_fixed_grid(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/product_structure.sql"), request)
+
+        for token in (
+            "'私域整体'",
+            "'APP'",
+            "'销售'",
+            "'用户层级×商品'",
+            "'学段×商品'",
+            "dimension_grid",
+            "'商品' AS dimension_type",
+            "'用户层级×商品'",
+            "'学段×商品'",
+            "COALESCE(a.user_layer, '未映射')",
+            "COALESCE(a.stage, '未知学段')",
+        ):
+            self.assertIn(token, sql)
+
+        grid = cte_body(sql, "dimension_values", "dimension_grid")
+        for token in ("FROM products", "FROM user_layer_values", "FROM stage_values"):
+            self.assertIn(token, grid)
+
+    def test_user_stage_keeps_unknowns_and_uses_fixed_dimension_grid(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/user_stage.sql"), request)
+
+        self.assertIn("'未映射'", sql)
+        self.assertIn("'未知学段'", sql)
+        self.assertIn("dimension_grid", sql)
+        dimension_rows = cte_body(sql, "dimension_rows", "channels")
+        self.assertNotIn("<> '未映射'", dimension_rows)
+        self.assertNotIn("<> '未知学段'", dimension_rows)
+
+        grid = cte_body(sql, "dimension_values", "dimension_grid")
+        for token in ("FROM user_layer_values", "FROM stage_values", "JOIN stage_values"):
+            self.assertIn(token, grid)
 
 
 if __name__ == "__main__":

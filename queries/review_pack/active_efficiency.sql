@@ -11,24 +11,44 @@ raw AS (
             WHEN a.business_gmv_attribution = '商业化' THEN 'APP'
             WHEN a.business_gmv_attribution = '电销' THEN '销售'
         END AS channel,
-        COALESCE(a.normal_price_amount, 0) AS pay_amount
+        CASE
+            WHEN a.business_gmv_attribution IN ('商业化', '电销')
+                THEN COALESCE(a.normal_price_amount, 0)
+            ELSE 0
+        END AS private_pay_amount
     FROM periods p
     JOIN aws.business_active_user_last_14_day a
       ON a.day BETWEEN p.start_day AND p.end_day
     WHERE a.u_user IS NOT NULL
 ),
-user_channel AS (
-    SELECT period, channel, user_id, SUM(pay_amount) AS pay_amount
+all_active_users AS (
+    SELECT period, user_id, SUM(private_pay_amount) AS pay_amount
+    FROM raw
+    GROUP BY period, user_id
+),
+private_active_users AS (
+    SELECT period, '私域整体' AS channel, user_id, pay_amount
+    FROM all_active_users
+),
+channel_active_users AS (
+    SELECT period, channel, user_id, SUM(private_pay_amount) AS pay_amount
     FROM raw
     WHERE channel IS NOT NULL
     GROUP BY period, channel, user_id
-    UNION ALL
-    SELECT period, '私域整体', user_id, SUM(pay_amount)
-    FROM raw
-    WHERE channel IS NOT NULL
-    GROUP BY period, user_id
 ),
-summary AS (
+user_channel AS (
+    SELECT period, channel, user_id, pay_amount FROM channel_active_users
+    UNION ALL
+    SELECT period, channel, user_id, pay_amount FROM private_active_users
+),
+channels AS (
+    SELECT '私域整体' AS channel UNION ALL SELECT 'APP' UNION ALL SELECT '销售'
+),
+dimension_grid AS (
+    SELECT p.period, c.channel
+    FROM periods p JOIN channels c ON 1 = 1
+),
+summary_actual AS (
     SELECT
         period,
         channel,
@@ -37,6 +57,17 @@ summary AS (
         SUM(pay_amount) AS pay_amount
     FROM user_channel
     GROUP BY period, channel
+),
+summary AS (
+    SELECT
+        g.period,
+        g.channel,
+        COALESCE(a.active_users, 0) AS active_users,
+        COALESCE(a.pay_users, 0) AS pay_users,
+        COALESCE(a.pay_amount, 0) AS pay_amount
+    FROM dimension_grid g
+    LEFT JOIN summary_actual a
+      ON g.period = a.period AND g.channel = a.channel
 ),
 metrics AS (
     SELECT period, channel, '活跃人数' AS metric, CAST(active_users AS DOUBLE) AS value FROM summary
