@@ -69,11 +69,12 @@ deposit_source_rows AS (
 deposit_source_ranked AS (
     SELECT period,channel,user_id,order_id,source_time,deposit_amount,user_layer,high_value_layer,COUNT(*) OVER(PARTITION BY period,user_id) source_orders,
            SUM(deposit_amount) OVER(PARTITION BY period,user_id) source_amount,
+           MIN(source_time) OVER(PARTITION BY period,user_id) earliest_source_time,
            ROW_NUMBER() OVER(PARTITION BY period, user_id ORDER BY source_time DESC, order_id DESC) source_rank
     FROM deposit_source_rows s
 ),
 deposit_users AS (
-    SELECT period,channel,user_id,source_time first_deposit_time,source_orders deposit_orders,source_amount deposit_amount,user_layer,high_value_layer
+    SELECT period,channel,user_id,earliest_source_time first_deposit_time,source_orders deposit_orders,source_amount deposit_amount,user_layer,high_value_layer
     FROM deposit_source_ranked WHERE source_rank = 1
 ),
 activity_audience AS (

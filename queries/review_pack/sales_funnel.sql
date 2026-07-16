@@ -14,7 +14,7 @@ active_ranked AS (
 ),
 active_users AS (
  SELECT period,channel,user_id,user_layer,stage FROM active_ranked WHERE fact_rank=1 AND channel IS NOT NULL
- UNION ALL SELECT period,'私域整体',user_id,user_layer,stage FROM (SELECT period,channel,user_id,user_layer,stage,ROW_NUMBER() OVER(PARTITION BY period,user_id ORDER BY CASE channel WHEN '销售' THEN 1 ELSE 2 END) private_rank FROM active_ranked WHERE fact_rank=1 AND channel IS NOT NULL) x WHERE private_rank=1
+ UNION ALL SELECT period,'私域整体',user_id,user_layer,stage FROM (SELECT period,channel,user_id,user_layer,stage,ROW_NUMBER() OVER(PARTITION BY period,user_id ORDER BY CASE WHEN channel IS NULL THEN 1 ELSE 2 END,user_id) private_rank FROM active_ranked WHERE fact_rank=1) private_active_users WHERE private_rank=1
 ),
 pool_users AS (
  SELECT p.period,CAST(d.active_u_user AS VARCHAR) user_id,
@@ -24,13 +24,13 @@ pool_users AS (
  HAVING first_receive_day IS NOT NULL
 ),
 phone_events AS (
- SELECT r.period,r.user_id,c.call_created_at,c.is_connect
+ SELECT r.period,r.user_id,c.call_created_at,c.is_valid_connect
  FROM pool_users r JOIN periods p ON r.period=p.period JOIN tmp.niyiqiao_crm_clue_call_record c ON CAST(c.user_id AS VARCHAR)=r.user_id
  WHERE CAST(CONCAT(SUBSTR(c.call_created_at,1,4),SUBSTR(c.call_created_at,6,2),SUBSTR(c.call_created_at,9,2)) AS INT) BETWEEN r.first_receive_day AND p.end_day
 ),
 phone_users AS (
- SELECT period,user_id,MIN(call_created_at) first_call_time,MIN(CASE WHEN is_connect=1 THEN call_created_at END) first_connected_time,
-  COUNT(*) call_count,SUM(CASE WHEN is_connect=1 THEN 1 ELSE 0 END) connected_count
+ SELECT period,user_id,MIN(call_created_at) first_call_time,MIN(CASE WHEN is_valid_connect=1 THEN call_created_at END) first_connected_time,
+  COUNT(*) call_count,SUM(CASE WHEN is_valid_connect=1 THEN 1 ELSE 0 END) connected_count
  FROM phone_events GROUP BY period,user_id
 ),
 conversion_after_receive AS (

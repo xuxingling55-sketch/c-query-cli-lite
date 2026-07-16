@@ -369,6 +369,31 @@ class RenderSqlTest(unittest.TestCase):
             self.assertIn("fact_rank = 1", audience)
             self.assertNotIn("MAX(CASE WHEN a.grade_name_month", audience)
 
+    def test_third_review_semantics_and_bounded_high_value_output(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        high = render_sql(Path("queries/review_pack/high_value.sql"), request)
+        sales = render_sql(Path("queries/review_pack/sales_funnel.sql"), request)
+        self.assertIn("dws.topic_user_active_detail_month", high)
+        self.assertIn("user_strategy_tag_month", high)
+        self.assertIn("'高净值层级' dimension_type", high)
+        self.assertIn("'学段' dimension_type", high)
+        self.assertIn("'商品' dimension_type", high)
+        self.assertNotIn("高净值细分×学段×商品", high)
+        # 2 periods * 3 channels * (5 layers + 5 stages + 8 products) * 13 metrics.
+        self.assertLess(2 * 3 * (5 + 5 + 8) * 13, 10000)
+        self.assertIn("is_valid_connect", sales)
+        self.assertNotIn("c.is_connect", sales)
+        self.assertIn("private_active_users", sales)
+
+    def test_strategy_conversion_uses_earliest_source_but_channel_uses_latest(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿", deposit_source_start="2026-06-24", deposit_source_end="2026-06-30", reservoir_source_start="2026-05-22", reservoir_source_end="2026-06-30")
+        for name in ("deposit", "reservoir"):
+            sql = render_sql(Path(f"queries/review_pack/{name}.sql"), request)
+            self.assertIn("MIN(source_time) OVER(PARTITION BY period,user_id) earliest_source_time", sql)
+            self.assertIn("ORDER BY source_time DESC, order_id DESC", sql)
+            self.assertIn("o.paid_time", sql)
+            self.assertIn("earliest_source_time", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

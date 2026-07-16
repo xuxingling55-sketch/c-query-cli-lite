@@ -4,14 +4,16 @@ user_layer_values AS (SELECT '新增' user_layer UNION ALL SELECT '老未' UNION
 stage_values AS (SELECT '1–3 年级' stage UNION ALL SELECT '4–6 年级' UNION ALL SELECT '初中' UNION ALL SELECT '高中' UNION ALL SELECT '未知学段'),
 products AS (SELECT '全部' product UNION ALL SELECT '组合品' UNION ALL SELECT '零售品' UNION ALL SELECT '家庭包' UNION ALL SELECT '从小学系列' UNION ALL SELECT '198' UNION ALL SELECT '498' UNION ALL SELECT '千元及以上'),
 source_ranked AS (
- SELECT p.period,CAST(a.u_user AS VARCHAR) user_id,CASE WHEN a.business_gmv_attribution='商业化' THEN 'APP' WHEN a.business_gmv_attribution='电销' THEN '销售' END channel,
+ SELECT p.period,CAST(m.u_user AS VARCHAR) user_id,CASE WHEN a.business_gmv_attribution='商业化' THEN 'APP' WHEN a.business_gmv_attribution='电销' THEN '销售' END channel,
  CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN '1–3 年级' WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN '4–6 年级' WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN '初中' WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN '高中' ELSE '未知学段' END stage,
- CASE WHEN a.user_strategy_tag_level2_month=CONCAT('付费组合品用户-',SUBSTR(CAST(p.start_day AS VARCHAR),1,4),'年初中毕业') THEN '高净值－当年毕业' WHEN a.user_strategy_tag_level2_month='历史大会员用户_可续购' THEN '高净值－历史大会员可续购' WHEN a.user_strategy_tag_level2_month='历史大会员用户_不可续购' THEN '高净值－历史大会员不可续购' ELSE '高净值－其他组合品' END detail_layer,
- ROW_NUMBER() OVER(PARTITION BY p.period,CAST(a.u_user AS VARCHAR),CASE WHEN a.business_gmv_attribution='商业化' THEN 'APP' WHEN a.business_gmv_attribution='电销' THEN '销售' END ORDER BY a.day DESC,CASE WHEN a.user_strategy_tag_level2_month='历史大会员用户_可续购' THEN 1 WHEN a.user_strategy_tag_level2_month='历史大会员用户_不可续购' THEN 2 ELSE 3 END) fact_rank
- FROM periods p JOIN aws.business_active_user_last_14_day a ON a.day=p.start_day WHERE a.u_user IS NOT NULL AND a.business_user_pay_status_statistics_month='高净值用户'
+ CASE WHEN m.user_strategy_tag_month REGEXP CONCAT('付费组合品用户-',SUBSTR(CAST(p.start_day AS VARCHAR),1,4),'年初中毕业') THEN '高净值－当年毕业' WHEN m.user_strategy_tag_month REGEXP '历史大会员用户_可续购' THEN '高净值－历史大会员可续购' WHEN m.user_strategy_tag_month REGEXP '历史大会员用户_不可续购' THEN '高净值－历史大会员不可续购' ELSE '高净值－其他组合品' END detail_layer,
+ ROW_NUMBER() OVER(PARTITION BY p.period,CAST(m.u_user AS VARCHAR),CASE WHEN a.business_gmv_attribution='商业化' THEN 'APP' WHEN a.business_gmv_attribution='电销' THEN '销售' END ORDER BY a.day DESC,CASE WHEN m.user_strategy_tag_month REGEXP '历史大会员用户_可续购' THEN 1 WHEN m.user_strategy_tag_month REGEXP '历史大会员用户_不可续购' THEN 2 ELSE 3 END,CAST(m.u_user AS VARCHAR)) fact_rank
+ FROM periods p JOIN dws.topic_user_active_detail_month m ON m.`month`=CAST(SUBSTR(CAST(p.start_day AS VARCHAR),1,6) AS INT)
+ LEFT JOIN aws.business_active_user_last_14_day a ON a.u_user=m.u_user AND a.day=p.start_day
+ WHERE m.u_user IS NOT NULL AND m.user_strategy_tag_month REGEXP '历史大会员用户|付费组合品用户|付费加购品用户'
 ),
 source_channel_users AS (SELECT period,channel,user_id,stage,detail_layer FROM source_ranked WHERE fact_rank=1 AND channel IS NOT NULL),
-source_private_users AS (SELECT period,'私域整体' channel,user_id,stage,detail_layer FROM (SELECT period,channel,user_id,stage,detail_layer,ROW_NUMBER() OVER(PARTITION BY period,user_id ORDER BY CASE channel WHEN '销售' THEN 1 ELSE 2 END) private_rank FROM source_channel_users) x WHERE private_rank=1),
+source_private_users AS (SELECT period,'私域整体' channel,user_id,stage,detail_layer FROM (SELECT period,user_id,stage,detail_layer,ROW_NUMBER() OVER(PARTITION BY period,user_id ORDER BY CASE WHEN stage<>'未知学段' THEN 1 ELSE 2 END,user_id) private_rank FROM source_ranked WHERE fact_rank=1) x WHERE private_rank=1),
 source_users AS (
  SELECT period,channel,user_id,stage,'高净值汇总' user_layer FROM source_channel_users UNION ALL SELECT period,channel,user_id,stage,detail_layer FROM source_channel_users
  UNION ALL SELECT period,channel,user_id,stage,'高净值汇总' FROM source_private_users UNION ALL SELECT period,channel,user_id,stage,detail_layer FROM source_private_users
@@ -67,4 +69,10 @@ combo_rows AS (
  UNION ALL SELECT period,channel,user_layer,stage,product,'组合品转化率',pay_users/NULLIF(active_users,0) FROM summary WHERE product='组合品'
 ),
 metrics AS (SELECT period,channel,user_layer,stage,product,metric,value FROM base_metrics UNION ALL SELECT period,channel,user_layer,stage,product,metric,value FROM combo_rows)
-SELECT period,channel,'高净值细分×学段×商品' dimension_type,CONCAT(user_layer,'×',stage,'×',product) dimension_value,metric,value,'v2;line_item_product;source=start_day_snapshot' source_version,CURRENT_TIMESTAMP data_updated_at,'high_value.snapshot_active_line_item.v2' definition_id FROM metrics LIMIT 10000
+SELECT period,channel,dimension_type,dimension_value,metric,value,'v3;monthly_source;independent_slices' source_version,CURRENT_TIMESTAMP data_updated_at,'high_value.monthly_pool_slices.v3' definition_id FROM (
+ SELECT period,channel,'高净值层级' dimension_type,user_layer dimension_value,metric,SUM(value) value FROM metrics WHERE product='全部' GROUP BY period,channel,user_layer,metric
+ UNION ALL
+ SELECT period,channel,'学段' dimension_type,stage dimension_value,metric,SUM(value) value FROM metrics WHERE user_layer='高净值汇总' AND product='全部' GROUP BY period,channel,stage,metric
+ UNION ALL
+ SELECT period,channel,'商品' dimension_type,product dimension_value,metric,SUM(value) value FROM metrics WHERE user_layer='高净值汇总' GROUP BY period,channel,product,metric
+) independent_slices LIMIT 10000

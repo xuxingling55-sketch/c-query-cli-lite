@@ -38,11 +38,12 @@ reservoir_source_rows AS (
 reservoir_source_ranked AS (
     SELECT period,channel,user_id,order_id,source_time,source_amount,user_layer,COUNT(*) OVER(PARTITION BY period,user_id) source_orders,
            SUM(source_amount) OVER(PARTITION BY period,user_id) total_source_amount,
+           MIN(source_time) OVER(PARTITION BY period,user_id) earliest_source_time,
            ROW_NUMBER() OVER(PARTITION BY period, user_id ORDER BY source_time DESC, order_id DESC) source_rank
     FROM reservoir_source_rows s
 ),
 reservoir_users AS (
-    SELECT period,channel,user_id,source_time first_source_time,source_orders,total_source_amount source_amount,user_layer
+    SELECT period,channel,user_id,earliest_source_time first_source_time,source_orders,total_source_amount source_amount,user_layer
     FROM reservoir_source_ranked WHERE source_rank = 1
 ),
 active_audience AS (
