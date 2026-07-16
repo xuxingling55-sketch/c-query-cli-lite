@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime
+from math import inf
 import unittest
 
 from review_pack.models import ModuleResult, ReviewPackResult, ReviewRequest
@@ -179,27 +180,34 @@ class ReviewPackValidationTest(unittest.TestCase):
         self.assertFalse(any(item.actual == 0.4 for item in checks))
 
     def test_dimension_total_includes_unknown_bucket(self):
-        rows = [
-            row("营收", current_value=100, last_year_value=80),
-            row(
-                "营收",
-                dimension_type="学段",
-                dimension_value="小学",
-                current_value=70,
-                last_year_value=60,
-            ),
-            row(
-                "营收",
-                dimension_type="学段",
-                dimension_value="未知",
-                current_value=20,
-                last_year_value=20,
-            ),
-        ]
+        result = pack_with_rows(
+            "active_efficiency",
+            [row("营收", dimension_type="渠道", current_value=100, last_year_value=80)],
+        )
+        result.modules["user_stage"] = ModuleResult(
+            module="user_stage",
+            status="success",
+            rows=[
+                row(
+                    "营收",
+                    dimension_type="学段",
+                    dimension_value="小学",
+                    current_value=70,
+                    last_year_value=60,
+                ),
+                row(
+                    "营收",
+                    dimension_type="学段",
+                    dimension_value="未知",
+                    current_value=20,
+                    last_year_value=20,
+                ),
+            ],
+        )
 
         failed = {
             item.check_id
-            for item in validate_pack(pack_with_rows("user_stage", rows))
+            for item in validate_pack(result)
             if item.status == "failed"
         }
 
@@ -209,6 +217,7 @@ class ReviewPackValidationTest(unittest.TestCase):
     def test_deposit_and_sales_conservation(self):
         deposit_rows = [
             row("定金来源用户数", current_value=10, last_year_value=8),
+            row("尾款人数", current_value=4, last_year_value=3),
             row("转组合品人数", current_value=3, last_year_value=2),
             row("转498人数", current_value=2, last_year_value=2),
             row("转其他商品人数", current_value=1, last_year_value=1),
@@ -234,6 +243,31 @@ class ReviewPackValidationTest(unittest.TestCase):
         self.assertIn("deposit_conservation", deposit_failed)
         self.assertIn("sales_conservation", sales_failed)
 
+    def test_deposit_conservation_allows_overlapping_product_destinations(self):
+        rows = [
+            row("定金来源用户数", current_value=10, last_year_value=8),
+            row("尾款人数", current_value=6, last_year_value=5),
+            row("未转化人数", current_value=4, last_year_value=3),
+            row("转组合品人数", current_value=5, last_year_value=4),
+            row("转498人数", current_value=4, last_year_value=3),
+            row("转其他商品人数", current_value=2, last_year_value=1),
+        ]
+
+        checks = validate_pack(pack_with_rows("deposit", rows))
+
+        conservation = [
+            item for item in checks if item.check_id == "deposit_conservation"
+        ]
+        self.assertTrue(conservation)
+        self.assertTrue(all(item.status == "passed" for item in conservation))
+        self.assertTrue(
+            any(
+                item.check_id == "deposit_destination_overlap"
+                and item.status == "warning"
+                for item in checks
+            )
+        )
+
     def test_formula_checks_conversion_aov_and_arpu(self):
         rows = [
             row("活跃人数", current_value=50, last_year_value=40),
@@ -251,17 +285,66 @@ class ReviewPackValidationTest(unittest.TestCase):
         self.assertEqual(by_id["formula_aov"].status, "failed")
         self.assertEqual(by_id["formula_arpu"].status, "passed")
 
-    def test_percentage_range_and_stale_update_fail(self):
+    def test_goal_completion_can_exceed_one_but_bounded_rate_cannot(self):
         bad_percentage = row("目标完成率", current_value=1.2, last_year_value=0.5)
+        impossible_conversion = row(
+            "付费转化率", current_value=1.2, last_year_value=0.5
+        )
         stale = row(data_updated_at=datetime(2026, 7, 14, 23, 59))
-        result = pack_with_rows("overview", [bad_percentage, stale])
+        result = pack_with_rows(
+            "overview", [bad_percentage, impossible_conversion, stale]
+        )
 
-        failed = {
-            item.check_id for item in validate_pack(result) if item.status == "failed"
-        }
+        checks = validate_pack(result)
+        percentage_failures = [
+            item
+            for item in checks
+            if item.check_id == "percentage_range" and item.status == "failed"
+        ]
 
-        self.assertIn("percentage_range", failed)
-        self.assertIn("update_freshness", failed)
+        self.assertEqual([item.actual for item in percentage_failures], [1.2])
+        self.assertTrue(
+            any(
+                item.check_id == "update_freshness" and item.status == "failed"
+                for item in checks
+            )
+        )
+
+    def test_overview_current_only_metrics_allow_missing_last_year(self):
+        current_only_metrics = (
+            "活动目标",
+            "目标完成额",
+            "目标完成率",
+            "目标差额",
+            "时间进度",
+            "营收进度与时间进度差",
+        )
+        rows = [
+            row(
+                metric,
+                current_value=1,
+                last_year_value=None,
+                period_status="missing_last_year",
+            )
+            for metric in current_only_metrics
+        ]
+        rows.append(
+            row(
+                "营收",
+                current_value=100,
+                last_year_value=None,
+                period_status="missing_last_year",
+            )
+        )
+
+        failures = [
+            item
+            for item in validate_pack(pack_with_rows("overview", rows))
+            if item.check_id == "period_complete" and item.status == "failed"
+        ]
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("营收", failures[0].message)
 
     def test_optional_metric_source_is_a_warning(self):
         unavailable = row(
@@ -359,6 +442,104 @@ class ReviewPackValidationTest(unittest.TestCase):
         checks = validate_pack(pack_with_rows("active_efficiency", rows))
 
         self.assertFalse(any(item.check_id == "period_complete" for item in checks))
+
+    def test_nonzero_denominator_null_formula_fails(self):
+        rows = [
+            row("活跃人数", current_value=50, last_year_value=40),
+            row("付费人数", current_value=20, last_year_value=10),
+            row("付费转化率", current_value=None, last_year_value=0.25),
+        ]
+
+        checks = validate_pack(pack_with_rows("active_efficiency", rows))
+
+        self.assertTrue(
+            any(
+                item.check_id == "formula_conversion"
+                and item.status == "failed"
+                and item.actual is None
+                for item in checks
+            )
+        )
+
+    def test_nonzero_denominator_null_formula_fails_when_numerator_is_unavailable(self):
+        rows = [
+            row("活跃蓄水用户数", current_value=5, last_year_value=4),
+            row(
+                "活跃蓄水用户转大率",
+                current_value=None,
+                last_year_value=None,
+            ),
+        ]
+
+        checks = validate_pack(pack_with_rows("reservoir", rows))
+
+        self.assertTrue(
+            any(
+                item.check_id == "formula_conversion"
+                and item.status == "failed"
+                and item.actual is None
+                for item in checks
+            )
+        )
+        self.assertTrue(
+            any(
+                item.check_id == "formula_unverifiable"
+                and item.status == "warning"
+                for item in checks
+            )
+        )
+
+    def test_required_base_none_and_non_finite_values_fail(self):
+        rows = [
+            row("营收", current_value=None, last_year_value=80),
+            row("订单量", current_value=inf, last_year_value=1),
+        ]
+
+        failures = [
+            item
+            for item in validate_pack(pack_with_rows("overview", rows))
+            if item.check_id == "numeric_value" and item.status == "failed"
+        ]
+
+        self.assertEqual({item.actual for item in failures}, {"None", "inf"})
+
+    def test_product_structure_reports_unverifiable_formulas(self):
+        rows = [
+            row(
+                metric,
+                dimension_type="商品",
+                dimension_value="组合品",
+                current_value=value,
+                last_year_value=value,
+            )
+            for metric, value in (
+                ("订单量", 2),
+                ("付费人数", 2),
+                ("营收", 200),
+                ("订单占比", 0.5),
+                ("付费人数占比", 0.5),
+                ("营收占比", 0.5),
+                ("转化率", 0.2),
+                ("客单价", 100),
+                ("ARPU", 20),
+            )
+        ]
+
+        checks = validate_pack(pack_with_rows("product_structure", rows))
+
+        self.assertTrue(
+            any(
+                item.check_id == "formula_aov" and item.status == "passed"
+                for item in checks
+            )
+        )
+        unverifiable = [
+            item
+            for item in checks
+            if item.check_id == "formula_unverifiable" and item.status == "warning"
+        ]
+        self.assertTrue(unverifiable)
+        self.assertTrue(any("转化率" in item.message for item in unverifiable))
 
     def test_user_layer_unknown_uses_query_dimension_name(self):
         unknown = row(

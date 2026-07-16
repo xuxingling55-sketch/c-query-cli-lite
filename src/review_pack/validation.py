@@ -37,6 +37,47 @@ _UNKNOWN_VALUES = {"未知", "未知学段", "未映射", "unknown", "UNKNOWN", 
 _ADDITIVE_MARKERS = ("营收", "金额", "订单量")
 _NON_ADDITIVE_MARKERS = ("率", "占比", "差", "客单价", "ARPU")
 _OVERLAP_MARKERS = ("人数", "用户数")
+_OVERVIEW_CURRENT_ONLY_METRICS = {
+    "活动目标",
+    "目标完成额",
+    "目标完成率",
+    "目标差额",
+    "时间进度",
+    "营收进度与时间进度差",
+}
+_NULLABLE_FORMULA_METRICS = {
+    "付费转化率",
+    "转化率",
+    "组合品转化率",
+    "目标完成率",
+    "尾款率",
+    "转大率",
+    "活跃蓄水用户转大率",
+    "非活跃蓄水用户转大率",
+    "有效接通率",
+    "线索领取率",
+    "企微添加率",
+    "客单价",
+    "ARPU",
+    "组合品客单价",
+    "组合品ARPU",
+    "有效接通后转化率",
+    "有效接通后客单价",
+    "有效接通后ARPU",
+    "未有效接通后转化率",
+    "未有效接通后客单价",
+    "未有效接通后ARPU",
+}
+_BOUNDED_RATE_MARKERS = (
+    "转化率",
+    "占比",
+    "比例",
+    "尾款率",
+    "转大率",
+    "领取率",
+    "接通率",
+    "添加率",
+)
 
 
 def _result(
@@ -147,8 +188,10 @@ def check_channel_sum(
 
 def _formula_spec(
     metrics: Mapping[str, Mapping[str, Any]],
-) -> list[tuple[str, str, str, str]]:
-    specs: list[tuple[str, str, str, str]] = []
+) -> list[tuple[str, str | None, str | None, str, tuple[str, ...], tuple[str, ...]]]:
+    specs: list[
+        tuple[str, str | None, str | None, str, tuple[str, ...], tuple[str, ...]]
+    ] = []
 
     def add(
         targets: Sequence[str],
@@ -156,17 +199,36 @@ def _formula_spec(
         denominators: Sequence[str],
         check_id: str,
     ) -> None:
-        target = next((name for name in targets if name in metrics), None)
-        numerator = next((name for name in numerators if name in metrics), None)
-        denominator = next((name for name in denominators if name in metrics), None)
-        if target and numerator and denominator:
-            specs.append((target, numerator, denominator, check_id))
+        target_options = tuple(targets)
+        numerator_options = tuple(numerators)
+        denominator_options = tuple(denominators)
+        target = next((name for name in target_options if name in metrics), None)
+        if target is None:
+            return
+        numerator = next((name for name in numerator_options if name in metrics), None)
+        denominator = next((name for name in denominator_options if name in metrics), None)
+        specs.append(
+            (
+                target,
+                numerator,
+                denominator,
+                check_id,
+                numerator_options,
+                denominator_options,
+            )
+        )
 
     add(
         ("付费转化率", "转化率"),
         ("付费人数", "支付用户", "转化人数"),
         ("活跃人数", "活跃用户", "线索领取人数"),
         "formula_conversion",
+    )
+    add(
+        ("目标完成率",),
+        ("目标完成额",),
+        ("活动目标",),
+        "formula_completion",
     )
     add(
         ("组合品转化率",),
@@ -177,9 +239,33 @@ def _formula_spec(
     add(("尾款率",), ("尾款人数",), ("定金来源用户数",), "formula_conversion")
     add(("转大率",), ("转大人数",), ("蓄水来源用户数",), "formula_conversion")
     add(
+        ("活跃蓄水用户转大率",),
+        ("活跃蓄水转大人数",),
+        ("活跃蓄水用户数",),
+        "formula_conversion",
+    )
+    add(
+        ("非活跃蓄水用户转大率",),
+        ("非活跃蓄水转大人数",),
+        ("非活跃蓄水用户数",),
+        "formula_conversion",
+    )
+    add(
         ("有效接通率",),
         ("有效接通人数",),
         ("电话拨打人数",),
+        "formula_conversion",
+    )
+    add(
+        ("线索领取率",),
+        ("线索领取人数",),
+        ("活跃人数", "活跃用户"),
+        "formula_conversion",
+    )
+    add(
+        ("企微添加率",),
+        ("企微添加人数",),
+        ("线索领取人数",),
         "formula_conversion",
     )
     add(
@@ -206,6 +292,15 @@ def _formula_spec(
         ("活跃人数", "活跃用户"),
         "formula_arpu",
     )
+    for target, numerators, denominators in (
+        ("活跃人数占比", ("活跃人数",), ("渠道活跃人数总量",)),
+        ("付费人数占比", ("付费人数",), ("渠道付费人数总量",)),
+        ("订单占比", ("订单量",), ("渠道订单量总量",)),
+        ("营收占比", ("付费金额", "营收"), ("渠道营收总量",)),
+        ("尾款营收占整体营收比例", ("尾款营收",), ("整体营收",)),
+        ("高净值营收占私域营收比例", ("营收",), ("私域营收",)),
+    ):
+        add((target,), numerators, denominators, "formula_ratio")
     for prefix, population in (
         ("有效接通后", "有效接通人数"),
         ("未有效接通后", "未有效接通人数"),
@@ -237,12 +332,74 @@ def check_formula(
     """Check deterministic conversion, AOV, and ARPU formulas."""
     checks: list[CheckResult] = []
     for metrics in _metric_rows(rows).values():
-        for target, numerator, denominator, check_id in _formula_spec(metrics):
+        for (
+            target,
+            numerator,
+            denominator,
+            check_id,
+            numerator_options,
+            denominator_options,
+        ) in _formula_spec(metrics):
+            if numerator is None or denominator is None:
+                if denominator is not None:
+                    for value_column in _PERIOD_VALUE_COLUMNS:
+                        if (
+                            module == "overview"
+                            and target in _OVERVIEW_CURRENT_ONLY_METRICS
+                            and value_column == "last_year_value"
+                        ):
+                            continue
+                        actual = metrics[target].get(value_column)
+                        bottom = metrics[denominator].get(value_column)
+                        if _number(bottom) and bottom != 0 and not _number(actual):
+                            checks.append(
+                                _result(
+                                    check_id,
+                                    "failed",
+                                    module,
+                                    f"{target}分母非零时必须是有效数值",
+                                    actual=(
+                                        str(actual) if actual is not None else None
+                                    ),
+                                    expected="finite numeric result",
+                                )
+                            )
+                missing = []
+                if numerator is None:
+                    missing.append("/".join(numerator_options))
+                if denominator is None:
+                    missing.append("/".join(denominator_options))
+                checks.append(
+                    _result(
+                        "formula_unverifiable",
+                        "warning",
+                        module,
+                        f"{target}缺少公式操作数，无法验证：{', '.join(missing)}",
+                        expected=", ".join(missing),
+                    )
+                )
+                continue
             for value_column in _PERIOD_VALUE_COLUMNS:
+                if (
+                    module == "overview"
+                    and target in _OVERVIEW_CURRENT_ONLY_METRICS
+                    and value_column == "last_year_value"
+                ):
+                    continue
                 actual = metrics[target].get(value_column)
                 top = metrics[numerator].get(value_column)
                 bottom = metrics[denominator].get(value_column)
-                if not all(_number(value) for value in (actual, top, bottom)):
+                if not _number(top) or not _number(bottom):
+                    checks.append(
+                        _result(
+                            "formula_unverifiable",
+                            "failed",
+                            module,
+                            f"{target}的公式操作数不是有效数值",
+                            actual=str((top, bottom)),
+                            expected="finite numeric operands",
+                        )
+                    )
                     continue
                 if bottom == 0:
                     if actual not in (0, None):
@@ -259,6 +416,18 @@ def check_formula(
                         )
                     continue
                 expected = top / bottom
+                if not _number(actual):
+                    checks.append(
+                        _result(
+                            check_id,
+                            "failed",
+                            module,
+                            f"{target}分母非零时必须是有效数值",
+                            actual=str(actual) if actual is not None else None,
+                            expected=expected,
+                        )
+                    )
+                    continue
                 difference = abs(actual - expected)
                 checks.append(
                     _result(
@@ -316,18 +485,39 @@ def _check_rows(module: str, rows: list[dict], request_end: date) -> list[CheckR
                     actual=", ".join(missing),
                 )
             )
-        if row.get("period_status") != "complete":
+        metric = str(row.get("metric", ""))
+        current_only = (
+            module == "overview" and metric in _OVERVIEW_CURRENT_ONLY_METRICS
+        )
+        period_status = row.get("period_status")
+        if period_status != "complete" and not (
+            current_only and period_status == "missing_last_year"
+        ):
             checks.append(
                 _result(
-                    "period_complete", "failed", module, "本期与去年同期必须同时存在"
+                    "period_complete",
+                    "failed",
+                    module,
+                    f"{metric}的本期与去年同期必须同时存在",
                 )
             )
 
-        metric = str(row.get("metric", ""))
         for column in _PERIOD_VALUE_COLUMNS:
             value = row.get(column)
+            allowed_current_only_missing = (
+                current_only
+                and period_status == "missing_last_year"
+                and column == "last_year_value"
+                and value is None
+            )
+            allowed_formula_null = value is None and (
+                metric in _NULLABLE_FORMULA_METRICS
+                or "占比" in metric
+                or "比例" in metric
+            )
             if (
-                value is not None
+                not allowed_current_only_missing
+                and not allowed_formula_null
                 and not _number(value)
                 and row.get("source_version") != "data_source_missing"
             ):
@@ -355,9 +545,10 @@ def _check_rows(module: str, rows: list[dict], request_end: date) -> list[CheckR
                         difference=abs(value),
                     )
                 )
-            if ("率" in metric or "占比" in metric or metric == "时间进度") and not (
-                0 <= value <= 1
-            ):
+            bounded_rate = metric == "时间进度" or any(
+                marker in metric for marker in _BOUNDED_RATE_MARKERS
+            )
+            if bounded_rate and not (0 <= value <= 1):
                 checks.append(
                     _result(
                         "percentage_range",
@@ -410,55 +601,58 @@ def _check_rows(module: str, rows: list[dict], request_end: date) -> list[CheckR
     return checks
 
 
-def _check_dimension_sums(
-    module: str, rows: list[dict], tolerance: float
-) -> list[CheckResult]:
-    checks: list[CheckResult] = []
-    totals: dict[tuple[Any, ...], Mapping[str, Any]] = {}
-    dimensions: dict[tuple[Any, ...], list[Mapping[str, Any]]] = defaultdict(list)
-    for row in rows:
-        base = (row.get("channel"), row.get("metric"), row.get("source_version"))
-        dimension_type = row.get("dimension_type")
-        if dimension_type == "总览":
-            totals[base] = row
-        elif dimension_type in {"学段", "用户分层", "用户层级"}:
-            dimensions[base + (dimension_type,)].append(row)
+_HIGH_VALUE_CHILDREN = {
+    "高净值－当年毕业",
+    "高净值－历史大会员可续购",
+    "高净值－历史大会员不可续购",
+    "高净值－其他组合品",
+}
 
-    high_value_children = {
-        "高净值－当年毕业",
-        "高净值－历史大会员可续购",
-        "高净值－历史大会员不可续购",
-        "高净值－其他组合品",
-    }
-    for (*base, dimension_type), parts in dimensions.items():
-        total = totals.get(tuple(base))
-        if total is None:
-            continue
-        metric = str(base[1])
-        if any(marker in metric for marker in _NON_ADDITIVE_MARKERS):
-            continue
-        if dimension_type in {"用户分层", "用户层级"} and any(
-            part.get("dimension_value") == "高净值汇总" for part in parts
+
+def _independent_dimension_parts(
+    dimension_type: str, parts: Sequence[Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    """Exclude nested high-value children when their parent aggregate is present."""
+    if dimension_type not in {"用户分层", "用户层级"} or not any(
+        part.get("dimension_value") == "高净值汇总" for part in parts
+    ):
+        return list(parts)
+    return [
+        part
+        for part in parts
+        if part.get("dimension_value") not in _HIGH_VALUE_CHILDREN
+    ]
+
+
+def _check_dimension_groups(
+    module: str,
+    totals: Mapping[tuple[Any, Any], Mapping[str, Any]],
+    grouped: Mapping[tuple[Any, Any, str], Sequence[Mapping[str, Any]]],
+    tolerance: float,
+) -> list[CheckResult]:
+    """Compare real detail dimensions with their channel-level module totals."""
+    checks: list[CheckResult] = []
+    for (channel, metric, dimension_type), raw_parts in grouped.items():
+        total = totals.get((channel, metric))
+        if total is None or any(
+            marker in str(metric) for marker in _NON_ADDITIVE_MARKERS
         ):
-            parts = [
-                part
-                for part in parts
-                if part.get("dimension_value") not in high_value_children
-            ]
+            continue
+        parts = _independent_dimension_parts(dimension_type, raw_parts)
         for column in _PERIOD_VALUE_COLUMNS:
-            total_value = total.get(column)
-            part_values = [part.get(column) for part in parts]
-            if not _number(total_value) or not all(_number(value) for value in part_values):
+            actual = total.get(column)
+            values = [part.get(column) for part in parts]
+            if not _number(actual) or not all(_number(value) for value in values):
                 continue
-            expected = sum(part_values)
-            difference = abs(total_value - expected)
+            expected = sum(values)
+            difference = abs(actual - expected)
             checks.append(
                 _result(
                     "dimension_sum",
                     "failed" if difference > tolerance else "passed",
                     module,
-                    f"{dimension_type}明细（含未知）应与总览一致",
-                    actual=total_value,
+                    f"{dimension_type}明细（含未知）应与活跃效率总量一致",
+                    actual=actual,
                     expected=expected,
                     difference=difference,
                 )
@@ -524,46 +718,7 @@ def _check_cross_module_dimensions(
                 (row.get("channel"), row.get("metric"), row.get("dimension_type"))
             ].append(row)
 
-    high_value_children = {
-        "高净值－当年毕业",
-        "高净值－历史大会员可续购",
-        "高净值－历史大会员不可续购",
-        "高净值－其他组合品",
-    }
-    checks: list[CheckResult] = []
-    for (channel, metric, dimension_type), parts in grouped.items():
-        total = totals.get((channel, metric))
-        if total is None:
-            continue
-        if any(marker in str(metric) for marker in _NON_ADDITIVE_MARKERS):
-            continue
-        if dimension_type in {"用户分层", "用户层级"} and any(
-            part.get("dimension_value") == "高净值汇总" for part in parts
-        ):
-            parts = [
-                part
-                for part in parts
-                if part.get("dimension_value") not in high_value_children
-            ]
-        for column in _PERIOD_VALUE_COLUMNS:
-            actual = total.get(column)
-            values = [part.get(column) for part in parts]
-            if not _number(actual) or not all(_number(value) for value in values):
-                continue
-            expected = sum(values)
-            difference = abs(actual - expected)
-            checks.append(
-                _result(
-                    "dimension_sum",
-                    "failed" if difference > tolerance else "passed",
-                    "user_stage",
-                    f"{dimension_type}明细（含未知）应与活跃效率总量一致",
-                    actual=actual,
-                    expected=expected,
-                    difference=difference,
-                )
-            )
-    return checks
+    return _check_dimension_groups("user_stage", totals, grouped, tolerance)
 
 
 def validate_pack(
@@ -642,7 +797,6 @@ def validate_pack(
         checks.extend(_check_rows(module_name, rows, result.request.end))
         checks.extend(_check_keys(module_name, rows))
         checks.extend(check_channel_sum(module_name, rows, tolerance))
-        checks.extend(_check_dimension_sums(module_name, rows, tolerance))
         checks.extend(check_formula(module_name, rows, tolerance))
         if module_name == "deposit":
             checks.extend(
@@ -651,15 +805,38 @@ def validate_pack(
                     rows,
                     tolerance,
                     "定金来源用户数",
-                    (
-                        "转组合品人数",
-                        "转498人数",
-                        "转其他商品人数",
-                        "未转化人数",
-                    ),
+                    ("尾款人数", "未转化人数"),
                     "deposit_conservation",
                 )
             )
+            for metrics in _metric_rows(rows).values():
+                destinations = (
+                    "转组合品人数",
+                    "转498人数",
+                    "转其他商品人数",
+                )
+                if "尾款人数" not in metrics or not all(
+                    metric in metrics for metric in destinations
+                ):
+                    continue
+                for column in _PERIOD_VALUE_COLUMNS:
+                    tail = metrics["尾款人数"].get(column)
+                    values = [metrics[metric].get(column) for metric in destinations]
+                    if not _number(tail) or not all(_number(value) for value in values):
+                        continue
+                    destination_sum = sum(values)
+                    if abs(destination_sum - tail) > tolerance:
+                        checks.append(
+                            _result(
+                                "deposit_destination_overlap",
+                                "warning",
+                                module_name,
+                                "商品去向按用户可能跨品类重叠，不做相加守恒",
+                                actual=destination_sum,
+                                expected=tail,
+                                difference=abs(destination_sum - tail),
+                            )
+                        )
         if module_name == "sales_funnel":
             checks.extend(
                 _check_conservation(
