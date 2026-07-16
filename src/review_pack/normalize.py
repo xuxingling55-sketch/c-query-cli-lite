@@ -1,6 +1,7 @@
 """Pair current and last-year long-format review results."""
 
 from collections.abc import Mapping, Sequence
+from math import isfinite
 from numbers import Number
 from typing import Any
 
@@ -20,6 +21,24 @@ _PAIR_KEY_FIELDS = (
 _PERIODS = ("本期", "去年同期")
 
 
+def _numeric(value: Any) -> bool:
+    return isinstance(value, Number) and not isinstance(value, bool)
+
+
+def _finite_numeric(value: Any) -> bool:
+    if not _numeric(value):
+        return False
+    own_check = getattr(value, "is_finite", None)
+    if callable(own_check):
+        return bool(own_check())
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return True
+    except TypeError:
+        return False
+
+
 def _none_if_missing(value: Any) -> Any:
     if value is None:
         return None
@@ -28,11 +47,9 @@ def _none_if_missing(value: Any) -> Any:
             return None
     except (TypeError, ValueError):
         pass
+    if _numeric(value) and not _finite_numeric(value):
+        return None
     return value
-
-
-def _numeric(value: Any) -> bool:
-    return isinstance(value, Number) and not isinstance(value, bool)
 
 
 def _date_range(start: Any, end: Any) -> str:
@@ -71,10 +88,14 @@ def pair_periods(
 
         absolute_change = None
         relative_change = None
-        if _numeric(current_value) and _numeric(last_year_value):
-            absolute_change = current_value - last_year_value
-            if last_year_value != 0:
-                relative_change = absolute_change / last_year_value
+        if _finite_numeric(current_value) and _finite_numeric(last_year_value):
+            absolute_candidate = current_value - last_year_value
+            if _finite_numeric(absolute_candidate):
+                absolute_change = absolute_candidate
+                if last_year_value != 0:
+                    relative_candidate = absolute_candidate / last_year_value
+                    if _finite_numeric(relative_candidate):
+                        relative_change = relative_candidate
 
         if current is None:
             period_status = "missing_current"

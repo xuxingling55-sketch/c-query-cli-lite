@@ -78,11 +78,11 @@ class PairPeriodsTest(unittest.TestCase):
         self.assertIsNone(by_metric["订单量"]["current_value"])
         self.assertEqual(by_metric["订单量"]["last_year_value"], 3)
 
-    def test_definition_and_source_version_are_part_of_pairing_key(self):
+    def test_source_version_is_part_of_pairing_key(self):
         paired = pair_periods(
             [
-                row("本期", 10, source_version="v1", definition_id="old"),
-                row("去年同期", 8, source_version="v2", definition_id="new"),
+                row("本期", 10, source_version="v1"),
+                row("去年同期", 8, source_version="v2"),
             ],
             request(),
         )
@@ -92,6 +92,42 @@ class PairPeriodsTest(unittest.TestCase):
             {item["period_status"] for item in paired},
             {"missing_current", "missing_last_year"},
         )
+
+    def test_definition_id_is_part_of_pairing_key(self):
+        paired = pair_periods(
+            [
+                row("本期", 10, definition_id="old"),
+                row("去年同期", 8, definition_id="new"),
+            ],
+            request(),
+        )
+
+        self.assertEqual(len(paired), 2)
+        self.assertEqual(
+            {item["period_status"] for item in paired},
+            {"missing_current", "missing_last_year"},
+        )
+
+    def test_non_finite_values_never_produce_non_finite_changes(self):
+        cases = (
+            (float("inf"), 1),
+            (1, float("-inf")),
+            (float("inf"), float("inf")),
+        )
+
+        for current, last_year in cases:
+            with self.subTest(current=current, last_year=last_year):
+                paired = pair_periods(
+                    [row("本期", current), row("去年同期", last_year)],
+                    request(),
+                )[0]
+
+                if current in (float("inf"), float("-inf")):
+                    self.assertIsNone(paired["current_value"])
+                if last_year in (float("inf"), float("-inf")):
+                    self.assertIsNone(paired["last_year_value"])
+                self.assertIsNone(paired["absolute_change"])
+                self.assertIsNone(paired["relative_change"])
 
     def test_converts_pandas_nan_to_none_without_losing_source_metadata(self):
         paired = pair_periods(
