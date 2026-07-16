@@ -1,0 +1,4 @@
+interface:
+  display_name: "生成复盘数据包"
+  short_description: "一次取齐固定活动复盘指标并检查结果后创建全新飞书电子表格"
+  default_prompt: "Use $review-data-pack to 生成暑促复盘数据包。"
