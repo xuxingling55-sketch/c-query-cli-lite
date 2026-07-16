@@ -278,6 +278,97 @@ class RenderSqlTest(unittest.TestCase):
         self.assertNotIn("call_phone_cnt", wechat)
         self.assertNotIn("call_through_cnt", wechat)
 
+    def test_sales_funnel_is_nested_and_orders_follow_contact_events(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/sales_funnel.sql"), request)
+
+        pool = cte_body(sql, "pool_users", "phone_events")
+        phone = cte_body(sql, "phone_events", "phone_users")
+        receive_conversion = cte_body(sql, "conversion_after_receive", "conversion_after_connected")
+        connect_conversion = cte_body(sql, "conversion_after_connected", "conversion_after_unconnected")
+        unconnected_conversion = cte_body(sql, "conversion_after_unconnected", "funnel_users")
+
+        self.assertIn("MIN(IF(d.recieve_u_user IS NOT NULL, d.day, NULL)) AS first_receive_day", pool)
+        self.assertIn("FROM pool_users r", phone)
+        self.assertIn("call_created_at", phone)
+        self.assertIn("r.first_receive_day", phone)
+        self.assertIn("p.end_day", phone)
+        self.assertIn("FROM pool_users r", receive_conversion)
+        self.assertIn("o.paid_time_sk >= r.first_receive_day", receive_conversion)
+        self.assertIn("o.paid_time > p.first_connected_time", connect_conversion)
+        self.assertIn("p.first_connected_time IS NULL", unconnected_conversion)
+        self.assertIn("o.paid_time > p.first_call_time", unconnected_conversion)
+
+    def test_strategy_users_have_one_stable_source_channel(self):
+        request = ReviewRequest.create(
+            "暑促", "2026-07-01", "2026-07-15", "1.2亿",
+            deposit_source_start="2026-06-24", deposit_source_end="2026-06-30",
+            reservoir_source_start="2026-05-22", reservoir_source_end="2026-06-30",
+        )
+        root = Path("queries/review_pack")
+        for name, source_cte, user_cte in (
+            ("deposit", "deposit_source_ranked", "deposit_users"),
+            ("reservoir", "reservoir_source_ranked", "reservoir_users"),
+        ):
+            sql = render_sql(root / f"{name}.sql", request)
+            ranked = cte_body(sql, source_cte, user_cte)
+            users = cte_body(sql, user_cte, "activity_audience" if name == "deposit" else "active_audience")
+            self.assertIn("ROW_NUMBER() OVER", ranked)
+            self.assertIn("PARTITION BY period, user_id", ranked)
+            self.assertIn("source_time DESC, order_id DESC", ranked)
+            self.assertIn("source_rank = 1", users)
+            self.assertNotIn("GROUP BY period, channel, user_id", users)
+
+    def test_strategy_templates_build_fixed_dimension_grids(self):
+        request = ReviewRequest.create(
+            "暑促", "2026-07-01", "2026-07-15", "1.2亿",
+            deposit_source_start="2026-06-24", deposit_source_end="2026-06-30",
+            reservoir_source_start="2026-05-22", reservoir_source_end="2026-06-30",
+        )
+        root = Path("queries/review_pack")
+        for name in ("deposit", "reservoir", "high_value", "sales_funnel"):
+            sql = render_sql(root / f"{name}.sql", request)
+            for cte in ("channels AS (", "user_layer_values AS (", "stage_values AS (", "dimension_grid AS ("):
+                self.assertIn(cte, sql)
+            grid = cte_body(sql, "dimension_grid", "summary_actual")
+            self.assertIn("CROSS JOIN channels", grid)
+            self.assertIn("CROSS JOIN user_layer_values", grid)
+            self.assertIn("CROSS JOIN stage_values", grid)
+            summary = cte_body(sql, "summary_actual", "summary")
+            self.assertNotIn("MAX(user_layer)", summary)
+            self.assertNotIn("MAX(stage)", summary)
+
+    def test_high_value_preserves_line_items_and_scopes_combo_metrics(self):
+        request = ReviewRequest.create("暑促", "2026-07-01", "2026-07-15", "1.2亿")
+        sql = render_sql(Path("queries/review_pack/high_value.sql"), request)
+        order_rows = cte_body(sql, "order_line_rows", "product_order_rows")
+        combo = cte_body(sql, "combo_rows", "metrics")
+
+        self.assertIn("o.sku_group_good_id", order_rows)
+        self.assertNotIn("MAX(business_good_kind", order_rows)
+        self.assertIn("WHERE product='组合品'", combo)
+        self.assertNotIn("product IN ('全部', '组合品')", combo)
+        self.assertNotIn("WHERE product NOT IN", combo)
+        self.assertIn("source_users", sql)
+        self.assertIn("active_users", sql)
+
+    def test_strategy_stage_comes_from_one_latest_fact_row(self):
+        request = ReviewRequest.create(
+            "暑促", "2026-07-01", "2026-07-15", "1.2亿",
+            deposit_source_start="2026-06-24", deposit_source_end="2026-06-30",
+            reservoir_source_start="2026-05-22", reservoir_source_end="2026-06-30",
+        )
+        for name, cte_name, next_name in (
+            ("deposit", "activity_audience", "tail_order_rows"),
+            ("reservoir", "active_audience", "conversion_order_rows"),
+        ):
+            sql = render_sql(Path(f"queries/review_pack/{name}.sql"), request)
+            audience = cte_body(sql, cte_name, next_name)
+            self.assertIn("ROW_NUMBER() OVER", audience)
+            self.assertIn("ORDER BY a.day DESC", audience)
+            self.assertIn("fact_rank = 1", audience)
+            self.assertNotIn("MAX(CASE WHEN a.grade_name_month", audience)
+
 
 if __name__ == "__main__":
     unittest.main()

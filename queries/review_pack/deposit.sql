@@ -6,13 +6,16 @@ WITH strategy_periods AS (
            CAST(DATE_FORMAT(DATE_SUB(STR_TO_DATE(CAST({{DEPOSIT_SOURCE_START}} AS VARCHAR), '%Y%m%d'), INTERVAL 1 YEAR), '%Y%m%d') AS INT),
            CAST(DATE_FORMAT(DATE_SUB(STR_TO_DATE(CAST({{DEPOSIT_SOURCE_END}} AS VARCHAR), '%Y%m%d'), INTERVAL 1 YEAR), '%Y%m%d') AS INT)
 ),
+channels AS (SELECT '私域整体' channel UNION ALL SELECT 'APP' UNION ALL SELECT '销售'),
+user_layer_values AS (SELECT '新增' user_layer UNION ALL SELECT '老未' UNION ALL SELECT '续费' UNION ALL SELECT '高净值汇总' UNION ALL SELECT '高净值－当年毕业' UNION ALL SELECT '高净值－历史大会员可续购' UNION ALL SELECT '高净值－历史大会员不可续购' UNION ALL SELECT '高净值－其他组合品' UNION ALL SELECT '未映射'),
+stage_values AS (SELECT '1–3 年级' stage UNION ALL SELECT '4–6 年级' UNION ALL SELECT '初中' UNION ALL SELECT '高中' UNION ALL SELECT '未知学段'),
 deposit_source_rows AS (
     SELECT
         p.period,
         CASE WHEN o.business_gmv_attribution = '商业化' THEN 'APP' ELSE '销售' END AS channel,
         CAST(o.u_user AS VARCHAR) AS user_id,
         o.order_id,
-        MIN(o.paid_time) AS first_deposit_time,
+        MIN(o.paid_time) AS source_time,
         SUM(o.sub_amount) AS deposit_amount,
         CASE
             WHEN o.business_user_pay_status_statistics IN ('新增', '新用户') THEN '新增'
@@ -63,28 +66,23 @@ deposit_source_rows AS (
             WHEN o.business_user_pay_status_statistics = '高净值用户' THEN '高净值－其他组合品'
             ELSE '非高净值' END
 ),
+deposit_source_ranked AS (
+    SELECT period,channel,user_id,order_id,source_time,deposit_amount,user_layer,high_value_layer,COUNT(*) OVER(PARTITION BY period,user_id) source_orders,
+           SUM(deposit_amount) OVER(PARTITION BY period,user_id) source_amount,
+           ROW_NUMBER() OVER(PARTITION BY period, user_id ORDER BY source_time DESC, order_id DESC) source_rank
+    FROM deposit_source_rows s
+),
 deposit_users AS (
-    SELECT period, channel, user_id, MIN(first_deposit_time) AS first_deposit_time,
-           COUNT(DISTINCT order_id) AS deposit_orders, SUM(deposit_amount) AS deposit_amount,
-           MAX(user_layer) AS user_layer, MAX(high_value_layer) AS high_value_layer
-    FROM deposit_source_rows
-    GROUP BY period, channel, user_id
+    SELECT period,channel,user_id,source_time first_deposit_time,source_orders deposit_orders,source_amount deposit_amount,user_layer,high_value_layer
+    FROM deposit_source_ranked WHERE source_rank = 1
 ),
 activity_audience AS (
-    SELECT p.period, CAST(a.u_user AS VARCHAR) AS user_id,
-           CASE
-               WHEN MAX(CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN 1 ELSE 0 END) = 1 THEN '1–3 年级'
-               WHEN MAX(CASE WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN 1 ELSE 0 END) = 1 THEN '4–6 年级'
-               WHEN MAX(CASE WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN 1 ELSE 0 END) = 1 THEN '初中'
-               WHEN MAX(CASE WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN 1 ELSE 0 END) = 1 THEN '高中'
-               ELSE '未知学段'
-           END AS stage
-    FROM strategy_periods p
-    JOIN aws.business_active_user_last_14_day a
-      ON a.day BETWEEN CASE WHEN p.period='本期' THEN {{CURRENT_START}} ELSE {{LAST_YEAR_START}} END
-                   AND CASE WHEN p.period='本期' THEN {{CURRENT_END}} ELSE {{LAST_YEAR_END}} END
-    WHERE a.u_user IS NOT NULL
-    GROUP BY p.period, CAST(a.u_user AS VARCHAR)
+    SELECT period,user_id,stage FROM (
+      SELECT p.period,CAST(a.u_user AS VARCHAR) user_id,
+       CASE WHEN a.grade_name_month IN ('一年级','二年级','三年级') THEN '1–3 年级' WHEN a.grade_name_month IN ('四年级','五年级','六年级') THEN '4–6 年级' WHEN a.grade_name_month IN ('七年级','八年级','九年级','初一','初二','初三') THEN '初中' WHEN a.grade_name_month IN ('高一','高二','高三','十年级') THEN '高中' ELSE '未知学段' END stage,
+       ROW_NUMBER() OVER(PARTITION BY p.period,CAST(a.u_user AS VARCHAR) ORDER BY a.day DESC) fact_rank
+      FROM strategy_periods p JOIN aws.business_active_user_last_14_day a ON a.day BETWEEN CASE WHEN p.period='本期' THEN {{CURRENT_START}} ELSE {{LAST_YEAR_START}} END AND CASE WHEN p.period='本期' THEN {{CURRENT_END}} ELSE {{LAST_YEAR_END}} END WHERE a.u_user IS NOT NULL
+    ) x WHERE fact_rank = 1
 ),
 tail_order_rows AS (
     SELECT d.period, d.channel, d.user_id, o.order_id,
@@ -115,10 +113,9 @@ channel_deposit_users AS (
            d.user_layer, d.high_value_layer, COALESCE(a.stage, '未知学段') AS stage
     FROM deposit_users d LEFT JOIN activity_audience a ON d.period=a.period AND d.user_id=a.user_id
     UNION ALL
-    SELECT d.period, '私域整体', d.user_id, SUM(d.deposit_orders), SUM(d.deposit_amount),
-           MAX(d.user_layer), MAX(d.high_value_layer), COALESCE(MAX(a.stage), '未知学段')
+    SELECT d.period, '私域整体', d.user_id, d.deposit_orders, d.deposit_amount,
+           d.user_layer, d.high_value_layer, COALESCE(a.stage, '未知学段')
     FROM deposit_users d LEFT JOIN activity_audience a ON d.period=a.period AND d.user_id=a.user_id
-    GROUP BY d.period, d.user_id
 ),
 channel_tail_orders AS (
     SELECT period, channel, user_id, order_id, flow_product, revenue FROM tail_orders
@@ -126,19 +123,16 @@ channel_tail_orders AS (
     SELECT period, '私域整体', user_id, order_id, flow_product, MAX(revenue)
     FROM tail_orders GROUP BY period, user_id, order_id, flow_product
 ),
-dimension_users AS (
-    SELECT period, channel, user_id, deposit_orders, deposit_amount, '整体' AS dimension_type, '全部' AS dimension_value FROM channel_deposit_users
-    UNION ALL SELECT period, channel, user_id, deposit_orders, deposit_amount, '用户层级', user_layer FROM channel_deposit_users
-    UNION ALL SELECT period, channel, user_id, deposit_orders, deposit_amount, '学段', stage FROM channel_deposit_users
-    UNION ALL SELECT period, channel, user_id, deposit_orders, deposit_amount, '高净值细分', high_value_layer FROM channel_deposit_users WHERE high_value_layer <> '非高净值'
+layer_expanded AS (
+    SELECT period,channel,user_id,deposit_orders,deposit_amount,stage,user_layer FROM channel_deposit_users
+    UNION ALL SELECT period,channel,user_id,deposit_orders,deposit_amount,stage,high_value_layer FROM channel_deposit_users WHERE high_value_layer<>'非高净值'
 ),
-source_summary AS (
-    SELECT period,channel,dimension_type,dimension_value,
-           COUNT(DISTINCT user_id) source_users,SUM(deposit_orders) source_orders,SUM(deposit_amount) source_amount
-    FROM dimension_users GROUP BY period,channel,dimension_type,dimension_value
+dimension_grid AS (
+    SELECT p.period,c.channel,u.user_layer,s.stage FROM strategy_periods p CROSS JOIN channels c CROSS JOIN user_layer_values u CROSS JOIN stage_values s
 ),
-tail_summary AS (
-    SELECT d.period, d.channel, d.dimension_type, d.dimension_value,
+summary_actual AS (
+    SELECT d.period, d.channel, d.user_layer,d.stage,
+           COUNT(DISTINCT d.user_id) source_users,SUM(d.deposit_orders) source_orders,SUM(d.deposit_amount) source_amount,
            COUNT(DISTINCT t.user_id) AS tail_users, COUNT(DISTINCT t.order_id) AS tail_orders, SUM(COALESCE(t.revenue, 0)) AS tail_revenue,
            COUNT(DISTINCT CASE WHEN t.flow_product='组合品' THEN t.user_id END) AS combo_users,
            COUNT(DISTINCT CASE WHEN t.flow_product='组合品' THEN t.order_id END) AS combo_orders,
@@ -149,18 +143,18 @@ tail_summary AS (
            COUNT(DISTINCT CASE WHEN t.flow_product='其他商品' THEN t.user_id END) AS other_users,
            COUNT(DISTINCT CASE WHEN t.flow_product='其他商品' THEN t.order_id END) AS other_orders,
            SUM(CASE WHEN t.flow_product='其他商品' THEN t.revenue ELSE 0 END) AS other_revenue
-    FROM dimension_users d LEFT JOIN channel_tail_orders t
+    FROM layer_expanded d LEFT JOIN channel_tail_orders t
       ON d.period=t.period AND d.channel=t.channel AND d.user_id=t.user_id
-    GROUP BY d.period, d.channel, d.dimension_type, d.dimension_value
+    GROUP BY d.period, d.channel,d.user_layer,d.stage
 ),
 summary AS (
-    SELECT s.period,s.channel,s.dimension_type,s.dimension_value,s.source_users,s.source_orders,s.source_amount,
-           COALESCE(t.tail_users,0) tail_users,COALESCE(t.tail_orders,0) tail_orders,COALESCE(t.tail_revenue,0) tail_revenue,
-           COALESCE(t.combo_users,0) combo_users,COALESCE(t.combo_orders,0) combo_orders,COALESCE(t.combo_revenue,0) combo_revenue,
-           COALESCE(t.p498_users,0) p498_users,COALESCE(t.p498_orders,0) p498_orders,COALESCE(t.p498_revenue,0) p498_revenue,
-           COALESCE(t.other_users,0) other_users,COALESCE(t.other_orders,0) other_orders,COALESCE(t.other_revenue,0) other_revenue
-    FROM source_summary s LEFT JOIN tail_summary t
-      ON s.period=t.period AND s.channel=t.channel AND s.dimension_type=t.dimension_type AND s.dimension_value=t.dimension_value
+    SELECT g.period,g.channel,'用户层级×学段' dimension_type,CONCAT(g.user_layer,'×',g.stage) dimension_value,
+           COALESCE(a.source_users,0) source_users,COALESCE(a.source_orders,0) source_orders,COALESCE(a.source_amount,0) source_amount,
+           COALESCE(a.tail_users,0) tail_users,COALESCE(a.tail_orders,0) tail_orders,COALESCE(a.tail_revenue,0) tail_revenue,
+           COALESCE(a.combo_users,0) combo_users,COALESCE(a.combo_orders,0) combo_orders,COALESCE(a.combo_revenue,0) combo_revenue,
+           COALESCE(a.p498_users,0) p498_users,COALESCE(a.p498_orders,0) p498_orders,COALESCE(a.p498_revenue,0) p498_revenue,
+           COALESCE(a.other_users,0) other_users,COALESCE(a.other_orders,0) other_orders,COALESCE(a.other_revenue,0) other_revenue
+    FROM dimension_grid g LEFT JOIN summary_actual a ON g.period=a.period AND g.channel=a.channel AND g.user_layer=a.user_layer AND g.stage=a.stage
 ),
 private_revenue AS (
     SELECT p.period, SUM(o.sub_amount) AS revenue
