@@ -117,3 +117,9 @@ queries/
 - SQL 必须带 `LIMIT`，默认和上限都是 `10000`。
 - 订单量必须使用 `COUNT(DISTINCT order_id)`。
 - `aws.business_active_user_last_14_day` 只代表 C 端/私域活跃。
+
+## 一键生成活动复盘数据包
+
+在 Codex 中说：生成复盘数据包：暑促，2026/7/1–7/15，目标 1.2 亿。
+
+系统会一次取齐固定指标、检查冲突并返回一份新的飞书表格。详细使用与故障恢复见 [复盘数据包操作说明](docs/review-data-pack-operations.md)。
