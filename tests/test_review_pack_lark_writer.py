@@ -12,6 +12,17 @@ from review_pack.models import CheckResult, ModuleResult, ReviewPackResult, Revi
 URL = "https://example.feishu.cn/sheets/test"
 
 
+def auth_status(identity="user", **user_overrides):
+    user = {
+        "verified": True,
+        "available": True,
+        "status": "ready",
+        "tokenStatus": "valid",
+    }
+    user.update(user_overrides)
+    return {"verified": True, "identity": identity, "identities": {"user": user}}
+
+
 def sample_result(snapshot: str = "") -> ReviewPackResult:
     common = {
         "channel": "私域整体",
@@ -65,11 +76,7 @@ def successful_runner(calls: list[tuple[list[str], str | None]]):
         nonlocal expected_payload
         calls.append((argv, stdin))
         if argv[1:3] == ["auth", "status"]:
-            return {
-                "verified": True,
-                "identity": "user",
-                "identities": {"user": {"status": "active", "verified": True}},
-            }
+            return auth_status()
         if "+workbook-create" in argv:
             expected_payload = json.loads(stdin)
             return {"ok": True, "data": {"spreadsheet": {"url": URL}}}
@@ -149,7 +156,7 @@ class LarkWorkbookWriterTest(unittest.TestCase):
 
             def fake(argv, stdin=None):
                 if argv[1:3] == ["auth", "status"]:
-                    return {"verified": True, "identity": "user"}
+                    return auth_status()
                 if "+workbook-create" in argv:
                     return {"ok": True, "data": {"spreadsheet": {"url": URL}}}
                 return {"ok": True, "data": {"sheets": []}}
@@ -175,32 +182,37 @@ class LarkWorkbookWriterTest(unittest.TestCase):
             LarkWorkbookWriter(fake).write(sample_result())
 
     def test_auth_must_be_verified_user_before_create(self):
+        invalid_statuses = (
+            {"identity": "user", "identities": {}},
+            auth_status(verified=False),
+            auth_status(available=False),
+            auth_status(status="expired"),
+            auth_status(tokenStatus="invalid"),
+        )
+        for status in invalid_statuses:
+            with self.subTest(status=status):
+                calls = []
+
+                def fake(argv, stdin=None):
+                    calls.append((argv, stdin))
+                    return status
+
+                with self.assertRaisesRegex(RuntimeError, "飞书用户认证不可用"):
+                    LarkWorkbookWriter(fake).write(sample_result())
+
+                self.assertFalse(any("+workbook-create" in argv for argv, _ in calls))
+
+    def test_bot_default_with_verified_user_token_is_allowed(self):
         calls = []
+        base = successful_runner(calls)
 
         def fake(argv, stdin=None):
-            calls.append((argv, stdin))
-            return {"verified": False, "identity": "user"}
+            if argv[1:3] == ["auth", "status"]:
+                calls.append((argv, stdin))
+                return auth_status(identity="bot", status="active")
+            return base(argv, stdin)
 
-        with self.assertRaisesRegex(RuntimeError, "飞书用户认证不可用"):
-            LarkWorkbookWriter(fake).write(sample_result())
-
-        self.assertFalse(any("+workbook-create" in argv for argv, _ in calls))
-
-    def test_bot_default_is_rejected_even_when_user_token_exists(self):
-        calls = []
-
-        def fake(argv, stdin=None):
-            calls.append((argv, stdin))
-            return {
-                "verified": True,
-                "identity": "bot",
-                "identities": {"user": {"status": "active", "verified": True}},
-            }
-
-        with self.assertRaisesRegex(RuntimeError, "飞书用户认证不可用"):
-            LarkWorkbookWriter(fake).write(sample_result())
-
-        self.assertFalse(any("+workbook-create" in argv for argv, _ in calls))
+        self.assertEqual(LarkWorkbookWriter(fake).write(sample_result()), URL)
 
     def test_date_only_table_get_values_match_written_datetimes(self):
         calls = []
@@ -222,6 +234,35 @@ class LarkWorkbookWriterTest(unittest.TestCase):
             return response
 
         self.assertEqual(LarkWorkbookWriter(fake).write(sample_result()), URL)
+
+    def test_iso_z_datetime_matches_same_readback_date(self):
+        calls = []
+        base = successful_runner(calls)
+
+        def fake(argv, stdin=None):
+            response = base(argv, stdin)
+            if "+table-get" in argv:
+                sheet = response["data"]["sheets"][1]
+                index = sheet["columns"].index("data_updated_at")
+                sheet["data"][0][index] = "2026-07-16T23:59:59Z"
+            return response
+
+        self.assertEqual(LarkWorkbookWriter(fake).write(sample_result()), URL)
+
+    def test_invalid_datetime_suffix_fails_readback(self):
+        calls = []
+        base = successful_runner(calls)
+
+        def fake(argv, stdin=None):
+            response = base(argv, stdin)
+            if "+table-get" in argv:
+                sheet = response["data"]["sheets"][1]
+                index = sheet["columns"].index("data_updated_at")
+                sheet["data"][0][index] = "2026-07-16-invalid"
+            return response
+
+        with self.assertRaisesRegex(RuntimeError, "回读验证失败"):
+            LarkWorkbookWriter(fake).write(sample_result())
 
     def test_percentage_metrics_get_percentage_row_styles(self):
         result = sample_result()
@@ -255,7 +296,7 @@ class LarkWorkbookWriterTest(unittest.TestCase):
 
         def fake(argv, stdin=None):
             if argv[1:3] == ["auth", "status"]:
-                return {"verified": True, "identity": "user"}
+                return auth_status()
             return {"ok": False, "error": {"message": secret}}
 
         with self.assertRaises(RuntimeError) as caught:

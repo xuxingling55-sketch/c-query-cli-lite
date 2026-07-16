@@ -126,12 +126,15 @@ class LarkWorkbookWriter:
             ["lark-cli", "auth", "status", "--json", "--verify"], None
         )
         user = status.get("identities", {}).get("user")
-        nested_user_invalid = isinstance(user, Mapping) and user.get("verified") is False
-        if (
-            status.get("verified") is not True
-            or status.get("identity") != "user"
-            or nested_user_invalid
-        ):
+        user_ready = (
+            isinstance(user, Mapping)
+            and user.get("verified") is True
+            and user.get("available") is True
+            and user.get("status") in {"ready", "active"}
+            and bool(user.get("tokenStatus"))
+            and user.get("tokenStatus") != "invalid"
+        )
+        if not user_ready:
             raise RuntimeError("飞书用户认证不可用，请先完成用户认证")
 
 
@@ -431,17 +434,39 @@ def _sentinel_matches(
         expected_sheet["columns"], expected_row, actual_row, strict=True
     ):
         if dtypes.get(column) == "datetime64[ns]":
-            if _date_part(expected) != _date_part(actual):
+            if expected is None or actual is None:
+                if expected != actual:
+                    return False
+                continue
+            expected_date = _iso_date(expected)
+            actual_date = _iso_date(actual)
+            if (
+                expected_date is None
+                or actual_date is None
+                or expected_date != actual_date
+            ):
                 return False
         elif expected != actual:
             return False
     return True
 
 
-def _date_part(value: Any) -> Any:
-    if isinstance(value, str) and len(value) >= 10:
-        return value[:10]
-    return value
+def _iso_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        pass
+    timestamp = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(timestamp).date()
+    except ValueError:
+        return None
 
 
 __all__ = ["LarkWorkbookWriter"]
