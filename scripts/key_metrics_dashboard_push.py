@@ -2049,7 +2049,7 @@ def revenue_progress_section_html(rows: List[Dict[str, Any]]) -> str:
     </section>"""
 
 
-def build_html(metrics: Dict[str, Any]) -> str:
+def build_html(metrics: Dict[str, Any], snapshot_url: Optional[str] = None) -> str:
     report_day = metrics["report_day"]
     report_start = report_start_for(report_day)
     report_window_label = report_window_label_for(report_day)
@@ -2061,6 +2061,11 @@ def build_html(metrics: Dict[str, Any]) -> str:
     }
     payload = dashboard_payload(metrics)
     payload_json = _json_for_html(payload)
+    snapshot_fetch_js = (
+        f"fetch({_json_for_html(snapshot_url)}, {{cache: \"no-store\"}})"
+        if snapshot_url
+        else "Promise.resolve(null)"
+    )
     revenue_progress_html = revenue_progress_section_html(payload["revenue_progress"])
 
     return f"""<!doctype html>
@@ -2080,6 +2085,8 @@ def build_html(metrics: Dict[str, Any]) -> str:
     h2 {{ margin:0; font-size:20px; line-height:1.3; }}
     .sub, .hint, footer {{ color:var(--muted); }}
     .sub {{ margin-top:8px; font-size:14px; }}
+    .snapshot-notice {{ margin:12px 0 0; padding:10px 14px; border:1px solid #f7c873; border-radius:10px; background:#fff8e8; color:#8a5a00; font-size:13px; }}
+    .snapshot-notice[hidden] {{ display:none; }}
     .summary {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:18px; }}
     .metric {{ background:rgba(255,255,255,.85); border:1px solid var(--line); border-radius:12px; padding:14px; }}
     .label {{ color:var(--muted); font-size:13px; }}
@@ -2159,6 +2166,7 @@ def build_html(metrics: Dict[str, Any]) -> str:
         <div class="metric"><div class="label">蓄水用户数</div><div class="value cyan" id="summary_reservoir_users">{html.escape(summary["reservoir_users"])}</div></div>
       </div>
     </header>
+    <div id="snapshot_notice" class="snapshot-notice" role="status" hidden></div>
     <section><div class="head"><h2>私域营收进度</h2><div class="hint" id="hint_revenue">目标 {REVENUE_TARGET_WAN:,}万，当前完成 {format_pct(metrics["revenue"]["progress"])}，去年同期完成率 {format_pct(metrics["revenue"]["last_year_progress"])}</div></div><div class="chart-wrap"><svg id="revenue_amount"></svg></div><div class="legend"><span class="blue">累计营收</span><span class="orange">目标线</span></div><table><thead><tr><th>指标</th><th>当前值</th></tr></thead><tbody><tr><td>电销营收</td><td id="revenue_telesale_value">{format_money_wan(metrics["revenue"]["telesale_amount"])}</td></tr><tr><td>APP营收</td><td id="revenue_app_value">{format_money_wan(metrics["revenue"]["app_amount"])}</td></tr><tr><td>去年同期营收</td><td id="last_year_revenue_value">{format_money_wan(metrics["revenue"]["last_year_amount"])}</td></tr><tr><td>去年同期完成率</td><td id="last_year_progress_value">{format_pct(metrics["revenue"]["last_year_progress"])}</td></tr></tbody></table></section>
     <section><div class="head"><h2>APP新增流量进度</h2><div class="hint" id="hint_app_flow">目标 {format_users(APP_FLOW_TARGET_USERS)}，当前完成 {format_pct(metrics["app_flow"]["progress"])}</div></div><div class="chart-wrap"><svg id="app_new_users"></svg></div><div class="legend"><span class="green">累计新增用户</span><span class="orange">目标线</span></div></section>
     <section><div class="head"><h2>定金量与尾款表现</h2><div class="hint" id="hint_deposit">尾款率=定金用户中{report_window_label}购买正价组合品且组合品支付时间不早于定金支付时间的用户 / 定金用户</div></div><div class="chart-wrap"><svg id="deposit_tail_rate"></svg></div><div class="legend"><span class="purple">累计尾款率</span></div><div class="chart-wrap"><svg id="deposit_tail_revenue_share"></svg></div><div class="legend"><span class="blue">定金尾款占C端营收</span><span class="orange">去年同期尾款占比</span></div><table><thead><tr><th>指标</th><th>当前值</th><th>说明</th></tr></thead><tbody><tr><td>定金用户</td><td id="deposit_users_value">{format_users(metrics["deposit"]["users"])}</td><td>6月24日至6月30日，商业化+电销</td></tr><tr><td>尾款量</td><td id="deposit_tail_users_value">{format_users(metrics["deposit"]["tail_users"])}</td><td>定金用户中{report_window_label}购买正价组合品且支付时间不早于定金支付时间</td></tr><tr><td>尾款率</td><td id="deposit_tail_rate_value">{format_pct(metrics["deposit"]["tail_rate"])}</td><td>累计尾款量 / 定金用户</td></tr><tr><td>尾款客单价</td><td id="deposit_tail_aov_value">{format_money_yuan(metrics["deposit"]["tail_aov"])}</td><td>尾款营收贡献 / 尾款量</td></tr><tr><td>定金尾款占C端营收</td><td id="deposit_tail_revenue_share_value">{format_pct(metrics["deposit"]["tail_revenue_share"])}</td><td>累计尾款营收 / 累计C端营收</td></tr><tr><td>去年同期尾款占比</td><td id="deposit_last_year_tail_revenue_share_value">{format_pct(metrics["deposit"]["last_year_tail_revenue_share"])}</td><td>去年同期累计尾款营收 / 去年同期累计C端营收</td></tr></tbody></table></section>
@@ -2186,6 +2194,18 @@ def build_html(metrics: Dict[str, Any]) -> str:
       if (!("DecompressionStream" in window)) throw new Error("当前浏览器不支持链接数据解压");
       const stream = new Blob([binary]).stream().pipeThrough(new DecompressionStream("deflate"));
       return JSON.parse(await new Response(stream).text());
+    }}
+    async function loadSnapshot() {{
+      const response = await {snapshot_fetch_js};
+      if (!response) return null;
+      if (!response.ok) throw new Error(`快照请求失败：${{response.status}}`);
+      return response.json();
+    }}
+    function showSnapshotNotice(message) {{
+      const notice = document.getElementById("snapshot_notice");
+      if (!notice) return;
+      notice.textContent = message;
+      notice.hidden = !message;
     }}
     function shouldUseUrlPayload(payload) {{
       if (!payload) return false;
@@ -2420,12 +2440,23 @@ def build_html(metrics: Dict[str, Any]) -> str:
       ], {{label: "从小学订单占比趋势", format: "pct"}});
       renderRevenueProgress(payload.revenue_progress || []);
     }}
+    async function loadLatestDashboard() {{
+      try {{
+        const snapshot = await loadSnapshot();
+        if (shouldUseUrlPayload(snapshot)) renderDashboard(snapshot);
+      }} catch (error) {{
+        showSnapshotNotice("快照加载失败，当前展示页面内置数据。");
+        console.warn("未能读取独立报表快照，已使用页面内置兜底数据", error);
+      }}
+      try {{
+        const payload = await decodePayloadFromUrl();
+        if (shouldUseUrlPayload(payload)) renderDashboard(payload);
+      }} catch (error) {{
+        console.warn("未能读取链接中的最新数据，已使用当前快照", error);
+      }}
+    }}
     renderDashboard(fallbackPayload);
-    decodePayloadFromUrl().then(payload => {{
-      if (shouldUseUrlPayload(payload)) renderDashboard(payload);
-    }}).catch(error => {{
-      console.warn("未能读取链接中的最新数据，已使用页面内置兜底数据", error);
-    }});
+    loadLatestDashboard();
   </script>
 </body>
 </html>"""
@@ -2436,6 +2467,25 @@ def write_html(metrics: Dict[str, Any], output_dir: Path = OUTPUT_DIR) -> Path:
     path = output_dir / "index.html"
     path.write_text(build_html(metrics), encoding="utf-8")
     return path
+
+
+def write_static_report(metrics: Dict[str, Any], output_dir: Path) -> Dict[str, Path]:
+    public_dir = output_dir / "public"
+    data_dir = public_dir / "data"
+    sql_dir = output_dir / "sql"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    sql_dir.mkdir(parents=True, exist_ok=True)
+
+    html_path = public_dir / "index.html"
+    snapshot_path = data_dir / "report.json"
+    sql_path = sql_dir / "report.sql"
+    html_path.write_text(build_html(metrics, snapshot_url="./data/report.json"), encoding="utf-8")
+    snapshot_path.write_text(
+        json.dumps(dashboard_payload(metrics), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    sql_path.write_text(key_metrics_sql(metrics["report_day"]).strip() + ";\n", encoding="utf-8")
+    return {"html": html_path, "snapshot": snapshot_path, "sql": sql_path}
 
 
 def build_card(metrics: Dict[str, Any], detail_url: str = KEY_METRICS_DETAIL_URL) -> Dict[str, Any]:

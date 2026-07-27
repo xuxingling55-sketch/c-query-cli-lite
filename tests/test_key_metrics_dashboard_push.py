@@ -428,6 +428,19 @@ class KeyMetricsDashboardPushTest(unittest.TestCase):
         self.assertNotIn("冲顶帆软底表字段说明", html)
         self.assertLess(html.index("冲顶营收进度"), html.index("<h1>问鼎·C端私域数据趋势看板</h1>"))
 
+    def test_write_static_report_creates_page_snapshot_and_sql(self) -> None:
+        metrics = push.sample_metrics(date(2026, 7, 26))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = push.write_static_report(metrics, Path(temp_dir))
+            html_text = paths["html"].read_text(encoding="utf-8")
+            payload = json.loads(paths["snapshot"].read_text(encoding="utf-8"))
+            sql_text = paths["sql"].read_text(encoding="utf-8")
+
+        self.assertIn('fetch("./data/report.json"', html_text)
+        self.assertEqual(payload["report_day"], "2026-07-26")
+        self.assertTrue(sql_text.lstrip().startswith("WITH"))
+
     def test_fetch_metrics_loads_fine_revenue_progress_when_available(self) -> None:
         def fake_runner(sql, _db_config):
             if "xuxingling_202607_chongding_fine_summary" in sql:
