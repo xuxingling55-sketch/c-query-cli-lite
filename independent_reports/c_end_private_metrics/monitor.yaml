@@ -1,0 +1,49 @@
+{
+  "id": "c-end-private-metrics",
+  "name": "问鼎·C 端私域数据趋势看板",
+  "category": "BI REPORT",
+  "description": "展示 C 端私域营收、流量、定金、蓄水和高净值续费表现。",
+  "path": "/c-end-private-metrics/",
+  "owner": "BI",
+  "repo": "market/bi/c-end-private-metrics",
+  "meta": [
+    "快照数据",
+    "手动更新"
+  ],
+  "auth": {
+    "mode": "login",
+    "project_id": "c-end-private-metrics"
+  },
+  "runtime": {
+    "type": "static",
+    "health_path": "/",
+    "cpu": 0.5,
+    "memory_mb": 256
+  },
+  "refresh": {
+    "enabled": false,
+    "entrypoint": "scripts/build-report.sh",
+    "business_date_arg": "--business-date",
+    "schedule": null,
+    "old_schedule_location": null
+  },
+  "production": {
+    "enabled": true,
+    "rollout": "auto-after-main",
+    "first_business_date": null
+  },
+  "secrets": [],
+  "runtime_data_dirs": [
+    "data",
+    "outputs",
+    "state",
+    "public/reports"
+  ],
+  "preview": {
+    "enabled": true,
+    "runtime": "static",
+    "path": "/_preview/c-end-private-metrics/",
+    "auth_project_id": "c-end-private-metrics-preview",
+    "data_mode": "snapshot"
+  }
+}
