@@ -2716,14 +2716,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--publish", action="store_true", help="发布/更新妙搭 HTML 外壳；调度机无 lark-cli 时不要使用")
     parser.add_argument("--skip-publish", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--skip-card", action="store_true", help="只生成/发布 HTML，不推送飞书卡片")
+    parser.add_argument(
+        "--standalone-output",
+        help="生成 NX 独立报表目录，写入页面、JSON 快照和当次 SQL",
+    )
+    parser.add_argument(
+        "--config",
+        help="本地数据配置文件路径；不传时读取项目 config.json 或 SR_* 环境变量",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=("auto", "starrocks", "sparksql"),
+        default="auto",
+        help="查询入口；默认优先使用配置中的 SparkSQL，失败时可明确选择 StarRocks",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     report_day = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else default_report_day()
-    metrics = sample_metrics(report_day) if args.sample else fetch_metrics(report_day)
+    if args.sample:
+        metrics = sample_metrics(report_day)
+    elif args.config or args.engine != "auto":
+        db_config = load_db_config(Path(args.config)) if args.config else load_db_config()
+        if args.engine == "starrocks":
+            db_config = {"starrocks": db_config["starrocks"]}
+        elif args.engine == "sparksql":
+            if not db_config.get("sparksql"):
+                raise RuntimeError("缺少 SparkSQL 配置")
+            db_config = {"starrocks": db_config["starrocks"], "sparksql": db_config["sparksql"]}
+        metrics = fetch_metrics(report_day, db_config=db_config)
+    else:
+        metrics = fetch_metrics(report_day)
     write_html(metrics)
+    if args.standalone_output:
+        write_static_report(metrics, Path(args.standalone_output))
     if args.publish and not args.skip_publish:
         published_url = publish_html(OUTPUT_DIR, dry_run=args.dry_run)
         detail_url = build_detail_url(metrics, published_url)

@@ -441,6 +441,27 @@ class KeyMetricsDashboardPushTest(unittest.TestCase):
         self.assertEqual(payload["report_day"], "2026-07-26")
         self.assertTrue(sql_text.lstrip().startswith("WITH"))
 
+    def test_parse_args_accepts_standalone_output_and_config(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "push",
+                "--sample",
+                "--standalone-output",
+                "report",
+                "--config",
+                "/safe/local/config.json",
+                "--engine",
+                "starrocks",
+            ],
+        ):
+            args = push.parse_args()
+
+        self.assertEqual(args.standalone_output, "report")
+        self.assertEqual(args.config, "/safe/local/config.json")
+        self.assertEqual(args.engine, "starrocks")
+
     def test_fetch_metrics_loads_fine_revenue_progress_when_available(self) -> None:
         def fake_runner(sql, _db_config):
             if "xuxingling_202607_chongding_fine_summary" in sql:

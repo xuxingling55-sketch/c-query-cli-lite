@@ -9,6 +9,7 @@
 ```bash
 python3 scripts/key_metrics_dashboard_push.py \
   --date YYYY-MM-DD \
+  --engine starrocks \
   --standalone-output independent_reports/c_end_private_metrics \
   --skip-card
 ```
