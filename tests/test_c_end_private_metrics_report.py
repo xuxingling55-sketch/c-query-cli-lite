@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import unittest
 
 
@@ -42,6 +43,28 @@ class CEndPrivateMetricsReportTest(unittest.TestCase):
             self.assertIn(term, metric)
         for term in ("生成快照", "Preview", "正式发布", "回滚"):
             self.assertIn(term, readme)
+
+    def test_generated_artifacts_are_safe_and_portable(self) -> None:
+        html = (self.root / "public" / "index.html").read_text(encoding="utf-8")
+        payload = json.loads(
+            (self.root / "public" / "data" / "report.json").read_text(encoding="utf-8")
+        )
+        sql = (self.root / "sql" / "report.sql").read_text(encoding="utf-8")
+        combined = html + json.dumps(payload, ensure_ascii=False) + sql
+
+        self.assertTrue(payload["daily"])
+        self.assertRegex(payload["report_day"], r"^2026-07-\d{2}$")
+        self.assertIn('fetch("./data/report.json"', html)
+        self.assertIn("@media (max-width:760px)", html)
+        self.assertNotIn("SR_PASSWORD", combined)
+        self.assertIsNone(
+            re.search(
+                r"""(?i)(password|access[_-]?token)["']?\s*[:=]\s*["'][^"']+""",
+                combined,
+            )
+        )
+        self.assertNotIn("http://", html)
+        self.assertNotIn("https://", html)
 
 
 if __name__ == "__main__":
