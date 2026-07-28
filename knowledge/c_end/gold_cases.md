@@ -477,3 +477,181 @@ GROUP BY report_month
 ORDER BY report_month
 LIMIT 10000
 ```
+
+## 销售侧企微漏斗与组织营收
+
+以下案例对应 `glossary.md` 的“销售侧企微漏斗与组织营收”专项口径。
+
+### 日活—企微添加—拉取入库—累计转化
+
+```sql
+WITH t_active AS (
+    SELECT DISTINCT
+        FROM_UNIXTIME(
+            UNIX_TIMESTAMP(CAST(day AS STRING), 'yyyyMMdd'),
+            'yyyy-MM-dd'
+        ) AS active_date,
+        u_user
+    FROM aws.business_active_user_last_14_day
+    WHERE day BETWEEN ${start_int} AND ${end_int}
+),
+t0 AS (
+    SELECT
+        external_user_id,
+        yc_user_id,
+        worker_id,
+        channel_id,
+        created_at AS add_created_at
+    FROM (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY
+                    external_user_id,
+                    worker_id,
+                    channel_id,
+                    yc_user_id,
+                    SUBSTR(created_at, 1, 7)
+                ORDER BY created_at
+            ) AS rn
+        FROM crm.contact_log
+        WHERE source = 3
+          AND change_type = 'add_external_contact'
+          AND LENGTH(yc_user_id) = 24
+          AND yc_user_id <> '000000000000000000000001'
+          AND SUBSTR(created_at, 1, 10) BETWEEN '${start}' AND '${end}'
+    )
+    WHERE rn = 1
+),
+t_active_add AS (
+    SELECT
+        t_active.active_date,
+        t_active.u_user,
+        t0.*
+    FROM t_active
+    INNER JOIN t0
+      ON t_active.u_user = t0.yc_user_id
+     AND t_active.active_date = SUBSTR(t0.add_created_at, 1, 10)
+),
+t1 AS (
+    SELECT *
+    FROM (
+        SELECT
+            a.active_date,
+            a.u_user,
+            a.external_user_id,
+            a.yc_user_id,
+            a.worker_id,
+            a.channel_id,
+            a.add_created_at,
+            b.user_id AS userid,
+            SUBSTR(b.created_at, 1, 19) AS recieve_time,
+            ROW_NUMBER() OVER (
+                PARTITION BY
+                    a.add_created_at,
+                    a.external_user_id,
+                    a.worker_id,
+                    a.channel_id
+                ORDER BY SUBSTR(b.created_at, 1, 19)
+            ) AS rk
+        FROM t_active_add a
+        LEFT JOIN aws.clue_info b
+          ON a.external_user_id = b.we_com_open_id
+         AND a.worker_id = b.worker_id
+         AND a.channel_id = b.qr_code_channel_id
+         AND a.yc_user_id = b.user_id
+         AND b.created_at > a.add_created_at
+         AND SUBSTR(b.created_at, 1, 10) < DATE_ADD(a.add_created_at, 1)
+    )
+    WHERE rk = 1
+),
+t2 AS (
+    SELECT
+        SUBSTR(pay_time, 1, 19) AS pay_time,
+        user_id AS paid_userid,
+        worker_id AS pay_worker_id,
+        amount
+    FROM aws.crm_order_info
+    WHERE workplace_id IN (4, 400, 702)
+      AND regiment_id NOT IN (0, 303, 546)
+      AND worker_id <> 0
+      AND in_salary = 1
+      AND is_test = false
+)
+SELECT
+    t1.active_date AS `活跃日`,
+    COUNT(DISTINCT t1.u_user) AS `活跃量`,
+    COUNT(DISTINCT t1.external_user_id) AS `企微添加量`,
+    COUNT(DISTINCT t1.userid) AS `拉取入库量`,
+    COUNT(DISTINCT t2.paid_userid) AS `转化量`,
+    SUM(IFNULL(t2.amount, 0)) AS `转化金额`
+FROM t1
+LEFT JOIN t2
+  ON t1.userid = t2.paid_userid
+ AND t2.pay_time > t1.recieve_time
+GROUP BY 1;
+```
+
+### 月活—企微添加—拉取入库—当月转化
+
+```sql
+SELECT
+    FROM_UNIXTIME(
+        UNIX_TIMESTAMP(CAST(CONCAT(month, 01) AS STRING), 'yyyyMMdd'),
+        'yyyy-MM-dd'
+    ) AS month,
+    grade_name_month,
+    stage_name_month,
+    user_pay_status_business_month,
+    COUNT(DISTINCT active_u_user) AS active_user,
+    COUNT(DISTINCT CASE
+        WHEN add_wechat_u_user IS NOT NULL THEN active_u_user
+    END) AS wechat_add_user,
+    COUNT(DISTINCT CASE
+        WHEN recieve_u_user IS NOT NULL THEN active_u_user
+    END) AS wechat_recieve_user,
+    COUNT(DISTINCT CASE
+        WHEN recieve_paid_u_user IS NOT NULL THEN active_u_user
+    END) AS wechat_recieve_paid_user,
+    SUM(recieve_paid_amount) AS wechat_recieve_paid_amount
+FROM aws.crm_active_user_wechat_paid_month
+WHERE month > 202305
+GROUP BY 1, 2, 3, 4;
+```
+
+### 每天团—组—个人营收
+
+```sql
+SELECT
+    SUBSTR(a.pay_time, 1, 10) AS pay_time,
+    b.workplace_name,
+    c.department_name,
+    d.regiment_name,
+    e.heads_name,
+    f.team_name,
+    a.worker_name,
+    SUM(a.amount) AS amount,
+    COUNT(DISTINCT a.order_id) AS ord_cnt,
+    COUNT(DISTINCT a.user_id) AS use_cnt
+FROM aws.crm_order_info a
+LEFT JOIN dw.dim_crm_organization b
+  ON a.workplace_id = b.id
+LEFT JOIN dw.dim_crm_organization c
+  ON a.department_id = c.id
+LEFT JOIN dw.dim_crm_organization d
+  ON a.regiment_id = d.id
+LEFT JOIN dw.dim_crm_organization e
+  ON a.heads_id = e.id
+LEFT JOIN dw.dim_crm_organization f
+  ON a.team_id = f.id
+WHERE SUBSTR(a.pay_time, 1, 10)
+      BETWEEN ${start_date} AND ${end_date}
+  AND a.workplace_id IN (4, 400, 702)
+  AND a.regiment_id NOT IN (303, 0, 546)
+  AND a.worker_id <> 0
+  AND a.is_test = false
+  AND a.in_salary = 1
+  AND a.status = '支付成功'
+GROUP BY 1, 2, 3, 4, 5, 6, 7
+LIMIT 10000;
+```

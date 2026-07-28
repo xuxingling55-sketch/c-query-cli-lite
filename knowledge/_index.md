@@ -22,6 +22,7 @@
 | 文件 | 用途 |
 |---|---|
 | `knowledge/c_end/gold_cases.md` | 保存已确认的最新看板对齐 SQL 案例，用于排查月报、活跃 ARPU、转化率、客单价等指标差异 |
+| `knowledge/c_end/product_knowledge_base.md` | 商品分析可迁移知识库，沉淀组合品、零售商品、续购、家庭包、从小学、蓄水、定金等商品口径和分析模板 |
 
 ## 已沉淀纠偏
 

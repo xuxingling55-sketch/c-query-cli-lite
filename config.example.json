@@ -17,5 +17,12 @@
   "engine_timeout_seconds": 900,
   "max_limit": 10000,
   "knowledge_dir": "./knowledge",
-  "domains": ["c_end"]
+  "domains": ["c_end"],
+  "llm": {
+    "base_url": "https://api.example.com/v1",
+    "api_key": "<用于自然语言生成 SQL 的模型服务密钥>",
+    "model": "<模型名称>",
+    "temperature": 0,
+    "timeout_seconds": 60
+  }
 }

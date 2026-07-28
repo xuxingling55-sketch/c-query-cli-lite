@@ -3,3 +3,4 @@ openpyxl
 pymysql
 impyla
 rich
+Flask

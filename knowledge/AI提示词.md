@@ -92,6 +92,7 @@
 - 跟活跃相关、需要以活跃用户为分母时，金额默认使用 `aws.business_active_user_last_14_day.normal_price_amount`。
 - 对用户解释时，必须直接说“**正价营收**”：订单侧常用 `original_amount >= 39`，活跃侧常用 `normal_price_amount > 0`；不要只写条件不说“正价”。
 - 用户即使只说“总营收”，默认也按**正价营收**处理；只有用户明确要求“全量营收/包含非正价”时，才去掉正价筛选，并在结果中显式说明口径变化。
+- 使用 `business_gmv_attribution` 拆渠道时，对外表达为：`商业化 = APP渠道`，`电销 = 电销渠道`。
 - 看营收、GMV、ARPU 分子或付费金额时，默认不要加 `status = '支付成功'`；只有用户明确要求支付成功、退款、到账或指定订单状态时，才按需求筛选 `status`。
 - 客单价默认使用 `pay_amount / pay_user_cnt`，不要使用金额 / 订单数。
 
@@ -103,6 +104,7 @@
 - 策略用户分层使用 `user_strategy_tag_day/month/year`；策略资格使用 `user_strategy_eligibility_day/month/year`。资格转化、升级率等指标必须先圈资格用户分母，再关联订单购买分子。
 - 金额字段需明确区分：`original_amount` 是超值价/订单原价，`sub_amount` 是到手价/实收金额，`discount_amount` 是实际优惠总金额，优惠/补差/策略让利不要用营收字段替代。
 - 单独看商品订单营收、GMV、订单量仍用订单表；涉及活跃分母的转化率、ARPU、客单价仍以 `aws.business_active_user_last_14_day` 为主表。
+- 商品分类中，若 `good_kind_name_level_2 = '同步课加培优课'` 且 `good_kind_name_level_3 = '同步课加培优课流量品'`，归为 `私教班`。
 - “从小学”产品专项口径：
   - 单科/联售/小学全科规划提分课统一按以下 `CASE WHEN` 分类：
     ```sql

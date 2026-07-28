@@ -427,7 +427,6 @@ CREATE EXTERNAL TABLE `dws`.`topic_order_detail` (
 -- | 高中 | 高一、高二、高三、十年级 |
 -- | 中职 | 职一、职二、职三 |
 -- | 其他 | 其他、unavailable、NULL |
--- 来源：谭晨
 --
 -- ## role（注册时选择的角色）
 --
@@ -439,7 +438,6 @@ CREATE EXTERNAL TABLE `dws`.`topic_order_detail` (
 -- | teacher | 老师 |
 -- | parents | 历史小程序注册用户默认给的家长身份 |
 -- | youzan | 有赞 |
--- 来源：谭晨
 --
 -- ## good_kind_name_level_1（商品一级类目）
 --
@@ -453,7 +451,6 @@ CREATE EXTERNAL TABLE `dws`.`topic_order_detail` (
 -- | 研学商品 | 研学相关 |
 -- | AI课堂 | AI 课程 |
 -- | 其他商品 | 其他 |
--- 来源：谭晨
 --
 -- ## good_kind_name_level_2（商品二级类目）
 --
