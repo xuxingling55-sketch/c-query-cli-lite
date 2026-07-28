@@ -24,6 +24,8 @@ python3 -m pip install -r requirements.txt
 cp config.example.json config.json   # 填入自己的 StarRocks 账号密码
 ```
 
+配置里只有数仓账号是必填的；`llm` 字段**不用填**（那是网页共享版专用的，见文末说明——走 skill 复盘时写 SQL 的就是你的 AI 本身），删掉或保留占位都行。
+
 如需产出飞书正式文档，还要安装 `lark-cli` 并完成飞书授权（能建文档、写电子表格）。
 
 然后用支持 Agent Skills 的 AI 工具打开本文件夹，对 AI 说：
@@ -87,7 +89,7 @@ python3 -m pip install -r requirements.txt
 cp config.example.json config.json
 ```
 
-打开 `config.json`，填入自己的 StarRocks 账号密码。SparkSQL 是备用引擎，可按需要填写。
+打开 `config.json`，填入自己的 StarRocks 账号密码。SparkSQL 是备用引擎，可按需要填写。`llm` 字段仅网页共享版需要，用 AI 工具（Cursor 等）时不用填。
 
 ## 第三步：让 AI 生成 SQL
 
