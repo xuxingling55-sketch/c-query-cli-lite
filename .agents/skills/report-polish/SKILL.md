@@ -89,6 +89,10 @@ description: 优化分析报告的可读性：重构结构使主次分明、压�
 
 1. **手术式修改，禁止 overwrite 全文重写**。先 `docs +fetch` 拿目录和目标 block ID，用 `block_replace` / `block_insert_after` 逐块修改；图片、画板、电子表格、`<cite>`、`<bookmark>` 等资源块一律不动。
 2. **改前记录 revision_id**，交付时告知用户可通过飞书版本历史回滚。
+3. **块编辑三个坑（每轮改完必须回读校验）**：
+   - `block_replace` 会给块生成**新的 block ID**；对已不存在的旧 ID 再执行编辑会**静默返回成功但不生效**。同一块二次修改前必须重新 `docs +fetch --detail with-ids` 取当前 ID，改完用 fetch 回读核对关键词，不能只看命令返回值。
+   - `<sheet>` 表格嵌入块不支持 `block_replace` 原地替换（静默无效）；要换表用 `block_insert_after` 插入新 sheet 块再 `block_delete` 删旧块。插入 sheet 块时飞书会把引用的工作表**克隆成新 sheet-id**，插入后要回读确认块数和内容。
+   - 连续快速执行多个插入可能部分静默丢失；批量插入逐个执行并在每步后校验块数，失败重试。
 3. **组件使用分寸**（遵循 lark-doc 的风格规范）：
    - 一句话总结用引用块（blockquote），不用高亮块。
    - 高亮块（callout）是强提醒信号，全文 0~2 个，只给口径说明、比较限制这类"不提醒会误读"的内容；原文已有的高亮块保留，不要再叠加。
