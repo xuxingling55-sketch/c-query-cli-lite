@@ -24,7 +24,7 @@ python3 -m pip install -r requirements.txt
 cp config.example.json config.json   # 填入自己的 StarRocks 账号密码
 ```
 
-配置里只有数仓账号是必填的；`llm` 字段**不用填**（那是网页共享版专用的，见文末说明——走 skill 复盘时写 SQL 的就是你的 AI 本身），删掉或保留占位都行。
+配置里只需要填数仓账号——写 SQL 的是你的 AI 本身，不需要额外的模型服务。
 
 如需产出飞书正式文档，还要安装 `lark-cli` 并完成飞书授权（能建文档、写电子表格）。
 
@@ -89,7 +89,7 @@ python3 -m pip install -r requirements.txt
 cp config.example.json config.json
 ```
 
-打开 `config.json`，填入自己的 StarRocks 账号密码。SparkSQL 是备用引擎，可按需要填写。`llm` 字段仅网页共享版需要，用 AI 工具（Cursor 等）时不用填。
+打开 `config.json`，填入自己的 StarRocks 账号密码。SparkSQL 是备用引擎，可按需要填写。
 
 ## 第三步：让 AI 生成 SQL
 
@@ -168,31 +168,3 @@ queries/
 不走完整复盘流程、只要数据时，可以直接对 AI 说：生成复盘数据包：暑促，2026/7/1–7/15，目标 1.2 亿。
 
 系统会一次取齐固定指标、检查冲突并返回一份新的飞书表格。详细使用与故障恢复见 [复盘数据包操作说明](docs/review-data-pack-operations.md)。
-
-## 网页共享版
-
-如果想让团队成员通过浏览器一起使用，可以启动共享取数台：
-
-```bash
-python src/web_app.py
-```
-
-启动后打开：
-
-```text
-http://127.0.0.1:5001
-```
-
-如果要分享给同一办公网络或 VPN 内的同事，把 `127.0.0.1` 换成启动机器的局域网 IP。分享前需要保持这台机器和网页服务一直开着。同事如果打不开，通常是电脑防火墙、网络隔离或不在同一个办公网络导致的。
-
-网页支持：
-
-- 输入自然语言问题后自动生成查询、执行并导出 Excel。
-- 选择自动、StarRocks 或 SparkSQL 执行。
-- 查看最近执行记录，并下载历史结果。
-- 复用原有安全规则，仍然只允许带时间过滤和 LIMIT 的查询语句。
-- 展开查看系统生成的查询语句，方便核对口径。
-
-部署给团队共享时，把服务运行在一台能访问数据源的机器上，并只在服务器本地保存 `config.json`。网页不会展示数据库账号密码。
-
-自然语言取数需要在 `config.json` 里配置 `llm`，用于把问题转换成 SQL。模型服务需要兼容 `/chat/completions` 调用格式。
