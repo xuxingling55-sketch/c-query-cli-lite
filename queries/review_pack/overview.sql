@@ -34,12 +34,14 @@ business_channels AS (
     FROM business_order_rows
     GROUP BY period
 ),
+-- 服务期营收按服务期团队归属统计（不按订单 GMV 渠道归属，也不限制订单渠道）：
+-- 电销团队会承接商业化/新媒体等其他渠道订单的服务期归属，按 GMV 渠道分组会把这部分错记。
 service_order_rows AS (
     SELECT
         p.period,
         CASE
-            WHEN o.business_gmv_attribution = '商业化' THEN 'APP'
-            WHEN o.business_gmv_attribution = '电销' THEN '销售'
+            WHEN array_contains(o.correct_team_names, '商业化-APP') THEN 'APP'
+            WHEN array_contains(o.correct_team_names, '电销/网销') THEN '销售'
         END AS channel,
         o.order_id,
         SUM(o.sub_amount) AS revenue
@@ -49,7 +51,6 @@ service_order_rows AS (
     WHERE o.u_user IS NOT NULL
       AND o.is_test_user = 0
       AND o.original_amount >= 39
-      AND o.business_gmv_attribution IN ('商业化', '电销')
       AND (
           array_contains(o.correct_team_names, '商业化-APP')
           OR array_contains(o.correct_team_names, '电销/网销')
