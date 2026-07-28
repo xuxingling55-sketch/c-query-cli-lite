@@ -108,12 +108,16 @@ layer_expanded AS (SELECT period,channel,user_id,source_orders,source_amount,is_
 dimension_grid AS (
     SELECT p.period,c.channel,u.user_layer,s.stage FROM strategy_periods p CROSS JOIN channels c CROSS JOIN user_layer_values u CROSS JOIN stage_values s
 ),
+-- 转大=转组合品（用户买过蓄水品后又买组合品才算转大）；买任意正价品只算“转化”，两组指标并列输出
 summary_actual AS (
     SELECT d.period,d.channel,d.user_layer,d.stage,COUNT(DISTINCT d.user_id) source_users,SUM(d.source_orders) source_orders,SUM(d.source_amount) source_amount,
            COUNT(DISTINCT CASE WHEN d.is_active=1 THEN d.user_id END) active_source_users,COUNT(DISTINCT CASE WHEN d.is_active=0 THEN d.user_id END) inactive_source_users,
            COUNT(DISTINCT c.user_id) converted_users,COUNT(DISTINCT c.order_id) converted_orders,SUM(COALESCE(c.revenue,0)) converted_revenue,
-           COUNT(DISTINCT CASE WHEN d.is_active=1 AND c.user_id IS NOT NULL THEN d.user_id END) active_converted_users,
-           COUNT(DISTINCT CASE WHEN d.is_active=0 AND c.user_id IS NOT NULL THEN d.user_id END) inactive_converted_users
+           COUNT(DISTINCT CASE WHEN c.flow_product='组合品' THEN c.user_id END) combo_users,
+           COUNT(DISTINCT CASE WHEN c.flow_product='组合品' THEN c.order_id END) combo_orders,
+           SUM(CASE WHEN c.flow_product='组合品' THEN COALESCE(c.revenue,0) ELSE 0 END) combo_revenue,
+           COUNT(DISTINCT CASE WHEN d.is_active=1 AND c.flow_product='组合品' THEN d.user_id END) active_combo_users,
+           COUNT(DISTINCT CASE WHEN d.is_active=0 AND c.flow_product='组合品' THEN d.user_id END) inactive_combo_users
     FROM layer_expanded d LEFT JOIN channel_conversion c
       ON d.period=c.period AND d.channel=c.channel AND d.user_id=c.user_id
     GROUP BY d.period,d.channel,d.user_layer,d.stage
@@ -123,7 +127,8 @@ summary AS (
            COALESCE(a.source_users,0) source_users,COALESCE(a.source_orders,0) source_orders,COALESCE(a.source_amount,0) source_amount,
            COALESCE(a.active_source_users,0) active_source_users,COALESCE(a.inactive_source_users,0) inactive_source_users,
            COALESCE(a.converted_users,0) converted_users,COALESCE(a.converted_orders,0) converted_orders,COALESCE(a.converted_revenue,0) converted_revenue,
-           COALESCE(a.active_converted_users,0) active_converted_users,COALESCE(a.inactive_converted_users,0) inactive_converted_users
+           COALESCE(a.combo_users,0) combo_users,COALESCE(a.combo_orders,0) combo_orders,COALESCE(a.combo_revenue,0) combo_revenue,
+           COALESCE(a.active_combo_users,0) active_combo_users,COALESCE(a.inactive_combo_users,0) inactive_combo_users
     FROM dimension_grid g LEFT JOIN summary_actual a ON g.period=a.period AND g.channel=a.channel AND g.user_layer=a.user_layer AND g.stage=a.stage
 ),
 flow_grid AS (
@@ -143,18 +148,22 @@ metrics AS (
     SELECT period,channel,dimension_type,dimension_value,'蓄水来源用户数' metric,CAST(source_users AS DOUBLE) value FROM summary
     UNION ALL SELECT period,channel,dimension_type,dimension_value,'蓄水订单量',CAST(source_orders AS DOUBLE) FROM summary
     UNION ALL SELECT period,channel,dimension_type,dimension_value,'蓄水金额',source_amount FROM summary
-    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大人数',CAST(converted_users AS DOUBLE) FROM summary
-    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大订单量',CAST(converted_orders AS DOUBLE) FROM summary
-    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大营收',converted_revenue FROM summary
-    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大率',converted_users/NULLIF(source_users,0) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转化人数',CAST(converted_users AS DOUBLE) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转化订单量',CAST(converted_orders AS DOUBLE) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转化营收',converted_revenue FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转化率',converted_users/NULLIF(source_users,0) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大人数',CAST(combo_users AS DOUBLE) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大订单量',CAST(combo_orders AS DOUBLE) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大营收',combo_revenue FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'转大率',combo_users/NULLIF(source_users,0) FROM summary
     UNION ALL SELECT period,channel,dimension_type,dimension_value,'活跃蓄水用户数',CAST(active_source_users AS DOUBLE) FROM summary
     UNION ALL SELECT period,channel,dimension_type,dimension_value,'非活跃蓄水用户数',CAST(inactive_source_users AS DOUBLE) FROM summary
-    UNION ALL SELECT period,channel,dimension_type,dimension_value,'活跃蓄水用户转大率',active_converted_users/NULLIF(active_source_users,0) FROM summary
-    UNION ALL SELECT period,channel,dimension_type,dimension_value,'非活跃蓄水用户转大率',inactive_converted_users/NULLIF(inactive_source_users,0) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'活跃蓄水用户转大率',active_combo_users/NULLIF(active_source_users,0) FROM summary
+    UNION ALL SELECT period,channel,dimension_type,dimension_value,'非活跃蓄水用户转大率',inactive_combo_users/NULLIF(inactive_source_users,0) FROM summary
     UNION ALL SELECT period,channel,dimension_type,dimension_value,'转化商品流向',value FROM flow_summary
 )
 SELECT period,channel,dimension_type,dimension_value,metric,value,
-       'v1;source_rule=sync_course_traffic_products;activity_window=conversion' source_version,
-       CURRENT_TIMESTAMP data_updated_at,'reservoir.source_conversion_flow.v1' definition_id
+       'v2;source_rule=sync_course_traffic_products;activity_window=conversion;convert_large=combo_only' source_version,
+       CURRENT_TIMESTAMP data_updated_at,'reservoir.source_conversion_flow.v2' definition_id
 FROM metrics
 LIMIT 10000
