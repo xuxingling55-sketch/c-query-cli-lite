@@ -19,6 +19,7 @@ business_order_rows AS (
     WHERE o.business_gmv_attribution IN ('商业化', '电销')
       AND o.u_user IS NOT NULL
       AND o.is_test_user = 0
+      AND o.original_amount >= 39
 ),
 business_channels AS (
     SELECT period, channel,
